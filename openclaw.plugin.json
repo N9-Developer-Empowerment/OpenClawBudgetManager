@@ -1,0 +1,29 @@
+{
+  "id": "budget-manager",
+  "name": "Budget Manager",
+  "description": "Daily API budget tracking with active model switching — patches OpenClaw config to use local Ollama models when the budget is exhausted, and restores the cloud model when the budget resets",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dailyBudgetUsd": {
+        "type": "number",
+        "default": 5.0
+      },
+      "ollamaUrl": {
+        "type": "string",
+        "default": "http://localhost:11434",
+        "description": "Base URL for the Ollama API"
+      },
+      "localModels": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "general": { "type": "string" },
+          "coding": { "type": "string" },
+          "vision": { "type": "string" }
+        }
+      }
+    }
+  }
+}

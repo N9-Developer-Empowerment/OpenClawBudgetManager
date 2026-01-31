@@ -1,0 +1,20 @@
+{
+  "name": "budget-manager",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for daily API budget tracking and enforcement",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "openclaw": {
+    "extensions": ["./src/index.ts"]
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "@types/node": "^22.0.0"
+  }
+}

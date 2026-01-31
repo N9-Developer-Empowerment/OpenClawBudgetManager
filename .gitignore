@@ -1,3 +1,15 @@
+# Node / TypeScript
+node_modules/
+dist/
+
+# Budget runtime data
+data/budget.json
+data/switcher-state.json
+data-test-*/
+
+# Plan files
+plan_*.md
+
 ### Python template
 # Byte-compiled / optimized / DLL files
 __pycache__/
