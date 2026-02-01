@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execSync } from "node:child_process";
 import { isOllamaRunning, hasModel } from "./ollama-client.js";
 import type { TaskType } from "./budget-gate.js";
@@ -16,6 +17,8 @@ interface Logger {
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
 }
+
+const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
 
 export function loadSwitcherState(statePath: string): SwitcherState | null {
   try {
@@ -40,40 +43,55 @@ export function clearSwitcherState(statePath: string): void {
   }
 }
 
-interface OpenClawConfigResult {
-  config: Record<string, unknown>;
-  hash: string;
+export function getConfigPath(): string {
+  return process.env.OPENCLAW_CONFIG ?? OPENCLAW_CONFIG_PATH;
 }
 
-export function getOpenClawConfig(): OpenClawConfigResult {
-  const raw = execSync("openclaw gateway call config.get", {
+interface OpenClawConfig {
+  agents?: {
+    defaults?: {
+      model?: { primary?: string; [key: string]: unknown };
+      models?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export function readOpenClawConfig(configPath?: string): OpenClawConfig {
+  const p = configPath ?? getConfigPath();
+  return JSON.parse(fs.readFileSync(p, "utf-8")) as OpenClawConfig;
+}
+
+export function writeOpenClawConfig(config: OpenClawConfig, configPath?: string): void {
+  const p = configPath ?? getConfigPath();
+  fs.writeFileSync(p, JSON.stringify(config, null, 2) + "\n");
+}
+
+export function restartGateway(): void {
+  execSync("openclaw gateway restart", {
     encoding: "utf-8",
-    timeout: 10_000,
-  });
-  const parsed = JSON.parse(raw) as { config: Record<string, unknown>; hash: string };
-  return { config: parsed.config, hash: parsed.hash };
-}
-
-export function patchOpenClawModel(modelId: string, hash: string): void {
-  const patch = JSON.stringify({
-    patch: { agents: { defaults: { model: { primary: modelId } } } },
-    hash,
-  });
-  execSync(`openclaw gateway call config.patch '${patch}'`, {
-    encoding: "utf-8",
-    timeout: 10_000,
+    timeout: 15_000,
+    stdio: "ignore",
   });
 }
 
-function resolveCurrentModel(config: Record<string, unknown>): string {
-  const agents = config.agents as Record<string, unknown> | undefined;
-  const defaults = agents?.defaults as Record<string, unknown> | undefined;
-  const model = defaults?.model as Record<string, unknown> | string | undefined;
-  if (typeof model === "string") return model;
-  if (typeof model === "object" && model !== null) {
-    return (model.primary as string) ?? "unknown";
+function resolveCurrentModel(config: OpenClawConfig): string {
+  return config.agents?.defaults?.model?.primary ?? "unknown";
+}
+
+function setActiveModel(config: OpenClawConfig, modelId: string): OpenClawConfig {
+  const updated = structuredClone(config);
+  if (!updated.agents) updated.agents = {};
+  if (!updated.agents.defaults) updated.agents.defaults = {};
+  if (!updated.agents.defaults.model) updated.agents.defaults.model = {};
+  updated.agents.defaults.model.primary = modelId;
+  if (!updated.agents.defaults.models) updated.agents.defaults.models = {};
+  if (!updated.agents.defaults.models[modelId]) {
+    updated.agents.defaults.models[modelId] = {};
   }
-  return "unknown";
+  return updated;
 }
 
 export async function switchToLocalModel(
@@ -106,11 +124,12 @@ export async function switchToLocalModel(
     }
   }
 
-  const { config, hash } = getOpenClawConfig();
+  const config = readOpenClawConfig();
   const originalModel = resolveCurrentModel(config);
-
   const ollamaModelId = `ollama/${target}`;
-  patchOpenClawModel(ollamaModelId, hash);
+
+  const updated = setActiveModel(config, ollamaModelId);
+  writeOpenClawConfig(updated);
 
   saveSwitcherState(statePath, {
     mode: "local",
@@ -119,7 +138,8 @@ export async function switchToLocalModel(
     switchedModelId: ollamaModelId,
   });
 
-  logger.info(`[model-switcher] Switched from ${originalModel} to ${ollamaModelId}`);
+  logger.info(`[model-switcher] Switched from ${originalModel} to ${ollamaModelId}, restarting gateway`);
+  restartGateway();
   return true;
 }
 
@@ -133,10 +153,12 @@ export async function restoreCloudModel(
     return false;
   }
 
-  const { hash } = getOpenClawConfig();
-  patchOpenClawModel(state.originalModel, hash);
+  const config = readOpenClawConfig();
+  const updated = setActiveModel(config, state.originalModel);
+  writeOpenClawConfig(updated);
   clearSwitcherState(statePath);
 
-  logger.info(`[model-switcher] Restored cloud model: ${state.originalModel}`);
+  logger.info(`[model-switcher] Restored cloud model: ${state.originalModel}, restarting gateway`);
+  restartGateway();
   return true;
 }

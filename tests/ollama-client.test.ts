@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { isOllamaRunning, listModels, hasModel } from "../src/ollama-client.js";
+import { isOllamaRunning, hasModel } from "../src/ollama-client.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -48,48 +48,6 @@ describe("Ollama Client", () => {
         "http://remote:9999",
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
-    });
-  });
-
-  describe("listModels", () => {
-    it("should parse model names from Ollama response", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue({
-          ok: true,
-          json: async () => ({
-            models: [
-              { name: "qwen3:8b" },
-              { name: "qwen3-coder:30b" },
-            ],
-          }),
-        }),
-      );
-
-      const models = await listModels();
-
-      expect(models).toEqual(["qwen3:8b", "qwen3-coder:30b"]);
-    });
-
-    it("should return an empty array on error", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-      );
-
-      expect(await listModels()).toEqual([]);
-    });
-
-    it("should return an empty array when response has no models", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue({
-          ok: true,
-          json: async () => ({}),
-        }),
-      );
-
-      expect(await listModels()).toEqual([]);
     });
   });
 

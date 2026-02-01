@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadBudget } from "../src/budget-store.js";
 import {
-  extractUsageFromMessages,
+  aggregateUsageFromMessages,
   calculateCost,
   trackUsage,
   type ModelCost,
@@ -11,6 +11,7 @@ import {
 
 const TEST_DATA_DIR = path.join(import.meta.dirname, "..", "data-test-tracker");
 const TEST_BUDGET_FILE = path.join(TEST_DATA_DIR, "budget.json");
+const FREE: ModelCost = { input: 0, output: 0 };
 
 beforeEach(() => {
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
@@ -21,20 +22,126 @@ afterEach(() => {
 });
 
 describe("Usage Tracker", () => {
-  describe("extractUsageFromMessages", () => {
-    it("should extract usage from the last assistant message", () => {
+  describe("aggregateUsageFromMessages", () => {
+    it("should extract usage from a single assistant message", () => {
       const messages = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
-          content: "hi there",
+          content: "hi",
           usage: { input_tokens: 100, output_tokens: 50 },
         },
       ];
 
-      const usage = extractUsageFromMessages(messages);
+      const result = aggregateUsageFromMessages(messages, "unknown", FREE);
 
-      expect(usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+      expect(result).not.toBeNull();
+      expect(result!.input_tokens).toBe(100);
+      expect(result!.output_tokens).toBe(50);
+    });
+
+    it("should sum usage across multiple assistant messages in a tool-use turn", () => {
+      const messages = [
+        { role: "user", content: "search for X" },
+        {
+          role: "assistant",
+          content: "calling tool",
+          model: "claude-opus-4-5",
+          provider: "anthropic",
+          usage: { input: 500, output: 100, cost: { total: 0.05 } },
+        },
+        { role: "tool", content: "tool result" },
+        {
+          role: "assistant",
+          content: "here is the answer",
+          model: "claude-opus-4-5",
+          provider: "anthropic",
+          usage: { input: 800, output: 200, cost: { total: 0.08 } },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "unknown", FREE);
+
+      expect(result).not.toBeNull();
+      expect(result!.input_tokens).toBe(1300);
+      expect(result!.output_tokens).toBe(300);
+      expect(result!.cost).toBeCloseTo(0.13);
+      expect(result!.model).toBe("anthropic/claude-opus-4-5");
+    });
+
+    it("should extract OpenClaw-format usage (input/output without _tokens suffix)", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: "response",
+          usage: { input: 8, output: 68, cacheRead: 22022, totalTokens: 22098 },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "unknown", FREE);
+
+      expect(result).not.toBeNull();
+      expect(result!.input_tokens).toBe(8);
+      expect(result!.output_tokens).toBe(68);
+    });
+
+    it("should use pre-calculated cost when available", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: "response",
+          usage: { input: 8, output: 68, cost: { total: 0.013976 } },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "unknown", FREE);
+
+      expect(result!.cost).toBe(0.013976);
+    });
+
+    it("should fall back to token-based cost calculation when no pre-calculated cost", () => {
+      const cost: ModelCost = { input: 0.003, output: 0.015 };
+      const messages = [
+        {
+          role: "assistant",
+          content: "response",
+          usage: { input_tokens: 1000, output_tokens: 500 },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "unknown", cost);
+
+      expect(result!.cost).toBeCloseTo(0.0105);
+    });
+
+    it("should resolve model from assistant message", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: "hi",
+          model: "claude-opus-4-5",
+          provider: "anthropic",
+          usage: { input: 100, output: 50, cost: { total: 0.01 } },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "unknown", FREE);
+
+      expect(result!.model).toBe("anthropic/claude-opus-4-5");
+    });
+
+    it("should use fallback model when message has no model field", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: "hi",
+          usage: { input_tokens: 100, output_tokens: 50 },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "gpt-4o", FREE);
+
+      expect(result!.model).toBe("gpt-4o");
     });
 
     it("should return null when no assistant message has usage", () => {
@@ -43,31 +150,11 @@ describe("Usage Tracker", () => {
         { role: "assistant", content: "hi there" },
       ];
 
-      expect(extractUsageFromMessages(messages)).toBeNull();
-    });
-
-    it("should use the last assistant message when multiple exist", () => {
-      const messages = [
-        {
-          role: "assistant",
-          content: "first",
-          usage: { input_tokens: 50, output_tokens: 25 },
-        },
-        { role: "user", content: "more" },
-        {
-          role: "assistant",
-          content: "second",
-          usage: { input_tokens: 200, output_tokens: 100 },
-        },
-      ];
-
-      const usage = extractUsageFromMessages(messages);
-
-      expect(usage).toEqual({ input_tokens: 200, output_tokens: 100 });
+      expect(aggregateUsageFromMessages(messages, "unknown", FREE)).toBeNull();
     });
 
     it("should return null for empty messages array", () => {
-      expect(extractUsageFromMessages([])).toBeNull();
+      expect(aggregateUsageFromMessages([], "unknown", FREE)).toBeNull();
     });
   });
 
@@ -87,9 +174,7 @@ describe("Usage Tracker", () => {
     });
 
     it("should handle Ollama (free) models with zero cost", () => {
-      const cost: ModelCost = { input: 0, output: 0 };
-
-      expect(calculateCost(5000, 2000, cost)).toBe(0);
+      expect(calculateCost(5000, 2000, FREE)).toBe(0);
     });
   });
 
@@ -112,6 +197,38 @@ describe("Usage Tracker", () => {
       expect(data.transactions).toHaveLength(1);
       expect(data.transactions[0].model).toBe("claude-sonnet-4-20250514");
       expect(data.transactions[0].cost_usd).toBeCloseTo(0.0105);
+    });
+
+    it("should sum costs from multiple assistant messages in a tool-use turn", () => {
+      loadBudget(TEST_BUDGET_FILE, 5.0);
+
+      const messages = [
+        { role: "user", content: "do something" },
+        {
+          role: "assistant",
+          content: "calling tool",
+          model: "claude-opus-4-5",
+          provider: "anthropic",
+          usage: { input: 500, output: 100, cost: { total: 0.05 } },
+        },
+        { role: "tool", content: "result" },
+        {
+          role: "assistant",
+          content: "done",
+          model: "claude-opus-4-5",
+          provider: "anthropic",
+          usage: { input: 800, output: 200, cost: { total: 0.08 } },
+        },
+      ];
+
+      trackUsage(TEST_BUDGET_FILE, "unknown", messages, FREE, 5.0);
+
+      const data = JSON.parse(fs.readFileSync(TEST_BUDGET_FILE, "utf-8"));
+      expect(data.transactions).toHaveLength(1);
+      expect(data.transactions[0].model).toBe("anthropic/claude-opus-4-5");
+      expect(data.transactions[0].tokens_in).toBe(1300);
+      expect(data.transactions[0].tokens_out).toBe(300);
+      expect(data.transactions[0].cost_usd).toBeCloseTo(0.13);
     });
 
     it("should skip recording when no usage data is available", () => {

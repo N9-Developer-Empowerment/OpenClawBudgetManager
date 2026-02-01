@@ -77,6 +77,3 @@ export function getRemainingBudget(filePath: string): number {
   return data.daily_budget_usd - data.spent_today_usd;
 }
 
-export function isOverBudget(filePath: string): boolean {
-  return getRemainingBudget(filePath) <= 0;
-}

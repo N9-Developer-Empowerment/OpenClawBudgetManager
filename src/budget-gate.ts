@@ -45,10 +45,6 @@ export function detectTaskType(prompt: string, messages: unknown[]): TaskType {
   return "general";
 }
 
-export function selectLocalModel(taskType: TaskType): string {
-  return getLocalModels()[taskType];
-}
-
 export interface BudgetDecision {
   action: "allow" | "prefer_cheaper" | "force_local";
   remaining_usd: number;
@@ -73,7 +69,7 @@ export function checkBudget(
       action: "force_local",
       remaining_usd: remaining,
       percent_remaining: percent,
-      forced_model: selectLocalModel(taskType),
+      forced_model: getLocalModels()[taskType],
       task_type: taskType,
     };
   }

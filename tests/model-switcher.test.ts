@@ -2,13 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-vi.mock("node:child_process", () => ({
-  execSync: vi.fn(),
-}));
-
 vi.mock("../src/ollama-client.js", () => ({
   isOllamaRunning: vi.fn(),
   hasModel: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => ({
+  execSync: vi.fn(),
 }));
 
 import { execSync } from "node:child_process";
@@ -17,15 +17,18 @@ import {
   loadSwitcherState,
   saveSwitcherState,
   clearSwitcherState,
-  getOpenClawConfig,
-  patchOpenClawModel,
+  readOpenClawConfig,
+  writeOpenClawConfig,
   switchToLocalModel,
   restoreCloudModel,
   type SwitcherState,
 } from "../src/model-switcher.js";
 
+const mockedExecSync = vi.mocked(execSync);
+
 const TEST_DATA_DIR = path.join(import.meta.dirname, "..", "data-test-switcher");
 const TEST_STATE_FILE = path.join(TEST_DATA_DIR, "switcher-state.json");
+const TEST_CONFIG_FILE = path.join(TEST_DATA_DIR, "openclaw.json");
 
 const LOCAL_MODELS = {
   general: "qwen3:8b",
@@ -39,17 +42,37 @@ const mockLogger = {
   error: vi.fn(),
 };
 
-const mockedExecSync = vi.mocked(execSync);
 const mockedIsOllamaRunning = vi.mocked(isOllamaRunning);
 const mockedHasModel = vi.mocked(hasModel);
+
+function writeTestConfig(primary = "anthropic/claude-opus-4-5") {
+  fs.writeFileSync(TEST_CONFIG_FILE, JSON.stringify({
+    agents: { defaults: { model: { primary }, models: { [primary]: {} } } },
+  }, null, 2));
+}
+
+interface TestConfig {
+  agents: {
+    defaults: {
+      model: { primary: string };
+      models: Record<string, unknown>;
+    };
+  };
+}
+
+function readTestConfig(): TestConfig {
+  return JSON.parse(fs.readFileSync(TEST_CONFIG_FILE, "utf-8"));
+}
 
 beforeEach(() => {
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   vi.clearAllMocks();
+  vi.stubEnv("OPENCLAW_CONFIG", TEST_CONFIG_FILE);
 });
 
 afterEach(() => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 describe("Model Switcher", () => {
@@ -61,7 +84,7 @@ describe("Model Switcher", () => {
     it("should save and load state", () => {
       const state: SwitcherState = {
         mode: "local",
-        originalModel: "claude-sonnet-4-20250514",
+        originalModel: "anthropic/claude-opus-4-5",
         switchedAt: "2026-01-31T12:00:00.000Z",
         switchedModelId: "ollama/qwen3:8b",
       };
@@ -75,7 +98,7 @@ describe("Model Switcher", () => {
     it("should clear state file", () => {
       const state: SwitcherState = {
         mode: "local",
-        originalModel: "claude-sonnet-4-20250514",
+        originalModel: "anthropic/claude-opus-4-5",
         switchedAt: "2026-01-31T12:00:00.000Z",
         switchedModelId: "ollama/qwen3:8b",
       };
@@ -93,30 +116,22 @@ describe("Model Switcher", () => {
     });
   });
 
-  describe("CLI interaction", () => {
-    it("should parse config.get response", () => {
-      mockedExecSync.mockReturnValue(
-        JSON.stringify({
-          config: { agents: { defaults: { model: { primary: "claude-sonnet-4-20250514" } } } },
-          hash: "abc123",
-        }),
-      );
+  describe("Config read/write", () => {
+    it("should read and parse the OpenClaw config", () => {
+      writeTestConfig();
 
-      const result = getOpenClawConfig();
+      const config = readOpenClawConfig(TEST_CONFIG_FILE);
 
-      expect(result.hash).toBe("abc123");
-      expect(result.config.agents).toBeDefined();
+      expect(config.agents?.defaults?.model?.primary).toBe("anthropic/claude-opus-4-5");
     });
 
-    it("should call config.patch with model and hash", () => {
-      mockedExecSync.mockReturnValue("");
+    it("should write config back preserving structure", () => {
+      writeTestConfig();
+      const config = readOpenClawConfig(TEST_CONFIG_FILE);
+      writeOpenClawConfig(config, TEST_CONFIG_FILE);
 
-      patchOpenClawModel("ollama/qwen3:8b", "abc123");
-
-      expect(mockedExecSync).toHaveBeenCalledWith(
-        expect.stringContaining("config.patch"),
-        expect.objectContaining({ encoding: "utf-8" }),
-      );
+      const reread = readTestConfig();
+      expect(reread.agents.defaults.model.primary).toBe("anthropic/claude-opus-4-5");
     });
   });
 
@@ -124,7 +139,7 @@ describe("Model Switcher", () => {
     it("should skip when already switched to local", async () => {
       saveSwitcherState(TEST_STATE_FILE, {
         mode: "local",
-        originalModel: "claude-sonnet-4-20250514",
+        originalModel: "anthropic/claude-opus-4-5",
         switchedAt: "2026-01-31T12:00:00.000Z",
         switchedModelId: "ollama/qwen3:8b",
       });
@@ -132,7 +147,6 @@ describe("Model Switcher", () => {
       const result = await switchToLocalModel("general", TEST_STATE_FILE, LOCAL_MODELS, mockLogger);
 
       expect(result).toBe(false);
-      expect(mockedExecSync).not.toHaveBeenCalled();
     });
 
     it("should skip when Ollama is not running", async () => {
@@ -147,37 +161,34 @@ describe("Model Switcher", () => {
     });
 
     it("should switch to the correct model for the task type", async () => {
+      writeTestConfig();
       mockedIsOllamaRunning.mockResolvedValue(true);
       mockedHasModel.mockResolvedValue(true);
-      mockedExecSync.mockReturnValueOnce(
-        JSON.stringify({
-          config: { agents: { defaults: { model: { primary: "claude-sonnet-4-20250514" } } } },
-          hash: "abc123",
-        }),
-      );
-      mockedExecSync.mockReturnValueOnce("");
 
       const result = await switchToLocalModel("coding", TEST_STATE_FILE, LOCAL_MODELS, mockLogger);
 
       expect(result).toBe(true);
+
       const state = loadSwitcherState(TEST_STATE_FILE);
       expect(state?.mode).toBe("local");
       expect(state?.switchedModelId).toBe("ollama/qwen3-coder:30b");
-      expect(state?.originalModel).toBe("claude-sonnet-4-20250514");
+      expect(state?.originalModel).toBe("anthropic/claude-opus-4-5");
+
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("ollama/qwen3-coder:30b");
+      expect(config.agents.defaults.models).toHaveProperty("ollama/qwen3-coder:30b");
+      expect(mockedExecSync).toHaveBeenCalledWith(
+        "openclaw gateway restart",
+        expect.objectContaining({ timeout: 15_000 }),
+      );
     });
 
     it("should fall back to general model when target is unavailable", async () => {
+      writeTestConfig();
       mockedIsOllamaRunning.mockResolvedValue(true);
       mockedHasModel
-        .mockResolvedValueOnce(false)  // coding model not available
-        .mockResolvedValueOnce(true);  // general model available
-      mockedExecSync.mockReturnValueOnce(
-        JSON.stringify({
-          config: { agents: { defaults: { model: { primary: "claude-sonnet-4-20250514" } } } },
-          hash: "abc123",
-        }),
-      );
-      mockedExecSync.mockReturnValueOnce("");
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
 
       const result = await switchToLocalModel("coding", TEST_STATE_FILE, LOCAL_MODELS, mockLogger);
 
@@ -199,15 +210,9 @@ describe("Model Switcher", () => {
     });
 
     it("should save state with the original cloud model", async () => {
+      writeTestConfig("gpt-4o");
       mockedIsOllamaRunning.mockResolvedValue(true);
       mockedHasModel.mockResolvedValue(true);
-      mockedExecSync.mockReturnValueOnce(
-        JSON.stringify({
-          config: { agents: { defaults: { model: { primary: "gpt-4o" } } } },
-          hash: "xyz789",
-        }),
-      );
-      mockedExecSync.mockReturnValueOnce("");
 
       await switchToLocalModel("general", TEST_STATE_FILE, LOCAL_MODELS, mockLogger);
 
@@ -218,45 +223,35 @@ describe("Model Switcher", () => {
 
   describe("restoreCloudModel", () => {
     it("should restore the original cloud model from state", async () => {
+      writeTestConfig("ollama/qwen3:8b");
       saveSwitcherState(TEST_STATE_FILE, {
         mode: "local",
-        originalModel: "claude-sonnet-4-20250514",
+        originalModel: "anthropic/claude-opus-4-5",
         switchedAt: "2026-01-31T12:00:00.000Z",
         switchedModelId: "ollama/qwen3:8b",
       });
-
-      mockedExecSync.mockReturnValueOnce(
-        JSON.stringify({
-          config: { agents: { defaults: { model: { primary: "ollama/qwen3:8b" } } } },
-          hash: "def456",
-        }),
-      );
-      mockedExecSync.mockReturnValueOnce("");
 
       const result = await restoreCloudModel(TEST_STATE_FILE, mockLogger);
 
       expect(result).toBe(true);
+
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("anthropic/claude-opus-4-5");
+      expect(config.agents.defaults.models).toHaveProperty("anthropic/claude-opus-4-5");
       expect(mockedExecSync).toHaveBeenCalledWith(
-        expect.stringContaining("claude-sonnet-4-20250514"),
-        expect.any(Object),
+        "openclaw gateway restart",
+        expect.objectContaining({ timeout: 15_000 }),
       );
     });
 
     it("should clear state after restoring", async () => {
+      writeTestConfig("ollama/qwen3:8b");
       saveSwitcherState(TEST_STATE_FILE, {
         mode: "local",
-        originalModel: "claude-sonnet-4-20250514",
+        originalModel: "anthropic/claude-opus-4-5",
         switchedAt: "2026-01-31T12:00:00.000Z",
         switchedModelId: "ollama/qwen3:8b",
       });
-
-      mockedExecSync.mockReturnValueOnce(
-        JSON.stringify({
-          config: { agents: { defaults: { model: { primary: "ollama/qwen3:8b" } } } },
-          hash: "def456",
-        }),
-      );
-      mockedExecSync.mockReturnValueOnce("");
 
       await restoreCloudModel(TEST_STATE_FILE, mockLogger);
 
@@ -267,7 +262,6 @@ describe("Model Switcher", () => {
       const result = await restoreCloudModel(TEST_STATE_FILE, mockLogger);
 
       expect(result).toBe(false);
-      expect(mockedExecSync).not.toHaveBeenCalled();
     });
   });
 });

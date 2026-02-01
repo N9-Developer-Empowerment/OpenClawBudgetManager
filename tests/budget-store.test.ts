@@ -5,7 +5,6 @@ import {
   loadBudget,
   recordTransaction,
   getRemainingBudget,
-  isOverBudget,
   type BudgetData,
 } from "../src/budget-store.js";
 
@@ -127,25 +126,4 @@ describe("Budget Store", () => {
     });
   });
 
-  describe("isOverBudget", () => {
-    it("should return false when under budget", () => {
-      loadBudget(TEST_BUDGET_FILE, 5.0);
-
-      expect(isOverBudget(TEST_BUDGET_FILE)).toBe(false);
-    });
-
-    it("should return true when over budget", () => {
-      loadBudget(TEST_BUDGET_FILE, 5.0);
-      recordTransaction(TEST_BUDGET_FILE, "claude-sonnet-4-20250514", 100000, 50000, 6.0);
-
-      expect(isOverBudget(TEST_BUDGET_FILE)).toBe(true);
-    });
-
-    it("should return true when exactly at budget", () => {
-      loadBudget(TEST_BUDGET_FILE, 5.0);
-      recordTransaction(TEST_BUDGET_FILE, "claude-sonnet-4-20250514", 100000, 50000, 5.0);
-
-      expect(isOverBudget(TEST_BUDGET_FILE)).toBe(true);
-    });
-  });
 });

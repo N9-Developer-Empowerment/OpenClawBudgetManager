@@ -9,32 +9,36 @@ const BUDGET_FILE = path.join(BUDGET_DATA_DIR, "budget.json");
 const SWITCHER_STATE_FILE = path.join(BUDGET_DATA_DIR, "switcher-state.json");
 
 const DEFAULT_COSTS: Record<string, ModelCost> = {
-  // Anthropic
+  // Anthropic (bare and provider-prefixed variants)
   "claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
+  "anthropic/claude-sonnet-4": { input: 0.003, output: 0.015 },
   "claude-opus-4-20250514": { input: 0.015, output: 0.075 },
+  "anthropic/claude-opus-4-5": { input: 0.015, output: 0.075 },
+  "anthropic/claude-opus-4": { input: 0.015, output: 0.075 },
   "claude-3-5-haiku-20241022": { input: 0.0008, output: 0.004 },
+  "anthropic/claude-3-5-haiku": { input: 0.0008, output: 0.004 },
   // OpenAI
   "gpt-4o": { input: 0.0025, output: 0.01 },
+  "openai/gpt-4o": { input: 0.0025, output: 0.01 },
   "gpt-4o-mini": { input: 0.00015, output: 0.0006 },
+  "openai/gpt-4o-mini": { input: 0.00015, output: 0.0006 },
   // DeepSeek
   "deepseek-chat": { input: 0.00014, output: 0.00028 },
+  "deepseek/deepseek-chat": { input: 0.00014, output: 0.00028 },
   "deepseek-reasoner": { input: 0.00055, output: 0.00219 },
+  "deepseek/deepseek-reasoner": { input: 0.00055, output: 0.00219 },
   // Gemini
   "gemini-2.0-flash": { input: 0.0001, output: 0.0004 },
+  "google/gemini-2.0-flash": { input: 0.0001, output: 0.0004 },
   "gemini-2.5-pro-preview-05-06": { input: 0.00125, output: 0.01 },
+  "google/gemini-2.5-pro-preview-05-06": { input: 0.00125, output: 0.01 },
   // Local (free) — Qwen 3 via Ollama
   "ollama/qwen3:8b": { input: 0, output: 0 },
   "ollama/qwen3-coder:30b": { input: 0, output: 0 },
   "ollama/qwen3-vl:8b": { input: 0, output: 0 },
 };
 
-function resolveModelCost(
-  modelId: string,
-  configCost?: { input?: number; output?: number },
-): ModelCost {
-  if (configCost && typeof configCost.input === "number" && typeof configCost.output === "number") {
-    return { input: configCost.input, output: configCost.output };
-  }
+function resolveModelCost(modelId: string): ModelCost {
   return DEFAULT_COSTS[modelId] ?? { input: 0, output: 0 };
 }
 
@@ -111,29 +115,8 @@ export default function register(api: OpenClawPluginApi) {
       const messages = event.messages as unknown[];
       if (!messages?.length) return;
 
-      // Try to determine model from config
-      const config = api.config as Record<string, unknown>;
-      const agents = config.agents as Record<string, unknown> | undefined;
-      const defaults = agents?.defaults as Record<string, unknown> | undefined;
-      const modelId = (defaults?.model as string) ?? "unknown";
-
-      // Resolve cost from config or defaults
-      const models = config.models as Record<string, unknown> | undefined;
-      const providers = models?.providers as Record<string, Record<string, unknown>> | undefined;
-      let configCost: { input?: number; output?: number } | undefined;
-
-      if (providers) {
-        for (const provider of Object.values(providers)) {
-          const modelDefs = provider.models as Array<Record<string, unknown>> | undefined;
-          const match = modelDefs?.find((m) => m.id === modelId);
-          if (match?.cost) {
-            configCost = match.cost as { input?: number; output?: number };
-            break;
-          }
-        }
-      }
-
-      const cost = resolveModelCost(modelId, configCost);
+      const modelId = (event.model as string) ?? "unknown";
+      const cost = resolveModelCost(modelId);
       trackUsage(BUDGET_FILE, modelId, messages, cost, DAILY_BUDGET_USD);
 
       const decision = checkBudget(BUDGET_FILE, DAILY_BUDGET_USD);

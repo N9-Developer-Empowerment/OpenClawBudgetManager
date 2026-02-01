@@ -5,10 +5,7 @@ import { loadBudget, recordTransaction } from "../src/budget-store.js";
 import {
   checkBudget,
   detectTaskType,
-  selectLocalModel,
   getLocalModels,
-  type BudgetDecision,
-  type TaskType,
 } from "../src/budget-gate.js";
 
 const TEST_DATA_DIR = path.join(import.meta.dirname, "..", "data-test-gate");
@@ -119,14 +116,6 @@ describe("Budget Gate", () => {
       expect(models.general).toBe("qwen3:8b");
       expect(models.coding).toBe("qwen3-coder:30b");
       expect(models.vision).toBe("llava:13b");
-    });
-  });
-
-  describe("selectLocalModel", () => {
-    it("should return the correct model for each task type", () => {
-      expect(selectLocalModel("coding")).toBe("qwen3-coder:30b");
-      expect(selectLocalModel("vision")).toBe("qwen3-vl:8b");
-      expect(selectLocalModel("general")).toBe("qwen3:8b");
     });
   });
 
