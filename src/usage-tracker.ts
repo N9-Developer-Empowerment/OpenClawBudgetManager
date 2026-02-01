@@ -1,4 +1,4 @@
-import { loadBudget, recordTransaction } from "./budget-store.js";
+import { loadBudget, recordTransaction, getLastTransactionTimestamp } from "./budget-store.js";
 
 export interface ModelCost {
   input: number;
@@ -49,20 +49,39 @@ export interface AggregatedUsage {
   cost: number;
 }
 
+function isFreeMessage(msg: Record<string, unknown>): boolean {
+  const provider = msg.provider as string | undefined;
+  if (provider === "ollama") return true;
+  const model = msg.model as string | undefined;
+  if (model && model.startsWith("ollama/")) return true;
+  return false;
+}
+
 export function aggregateUsageFromMessages(
   messages: unknown[],
   fallbackModelId: string,
   fallbackCost: ModelCost,
+  since?: string | null,
 ): AggregatedUsage | null {
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCost = 0;
   let resolvedModel = fallbackModelId;
   let found = false;
+  const fallbackIsFree = fallbackModelId.startsWith("ollama/");
 
   for (const raw of messages) {
     const msg = raw as Record<string, unknown>;
     if (msg?.role !== "assistant" || !msg.usage || typeof msg.usage !== "object") continue;
+
+    // Skip messages we've already counted (or can't verify as new)
+    if (since) {
+      const rawTs = msg.timestamp;
+      if (!rawTs) continue;
+      const sinceMs = new Date(since).getTime();
+      const msgMs = typeof rawTs === "number" ? rawTs : new Date(String(rawTs)).getTime();
+      if (isNaN(msgMs) || msgMs <= sinceMs) continue;
+    }
 
     const usage = msg.usage as Record<string, unknown>;
     const tokens = extractTokens(usage);
@@ -72,17 +91,22 @@ export function aggregateUsageFromMessages(
     totalInputTokens += tokens.input_tokens;
     totalOutputTokens += tokens.output_tokens;
 
-    const preCost = extractPreCalculatedCost(usage);
-    if (preCost !== null) {
-      totalCost += preCost;
+    // Local/free models: always $0 regardless of pre-calculated cost
+    if (isFreeMessage(msg) || fallbackIsFree) {
+      // cost += 0
     } else {
-      totalCost += calculateCost(tokens.input_tokens, tokens.output_tokens, fallbackCost);
+      const preCost = extractPreCalculatedCost(usage);
+      if (preCost !== null) {
+        totalCost += preCost;
+      } else {
+        totalCost += calculateCost(tokens.input_tokens, tokens.output_tokens, fallbackCost);
+      }
     }
 
-    // Use model from the first assistant message that has one
+    // Use model from the first new assistant message that has one
     if (resolvedModel === fallbackModelId) {
-      const model = msg.model as string | undefined;
       const provider = msg.provider as string | undefined;
+      const model = msg.model as string | undefined;
       if (model) {
         resolvedModel = provider ? `${provider}/${model}` : model;
       }
@@ -116,7 +140,8 @@ export function trackUsage(
 ): void {
   loadBudget(budgetFilePath, dailyBudgetUsd);
 
-  const aggregated = aggregateUsageFromMessages(messages, modelId, cost);
+  const since = getLastTransactionTimestamp(budgetFilePath);
+  const aggregated = aggregateUsageFromMessages(messages, modelId, cost, since);
   if (!aggregated) return;
 
   recordTransaction(

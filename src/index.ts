@@ -117,6 +117,7 @@ export default function register(api: OpenClawPluginApi) {
 
       const modelId = (event.model as string) ?? "unknown";
       const cost = resolveModelCost(modelId);
+
       trackUsage(BUDGET_FILE, modelId, messages, cost, DAILY_BUDGET_USD);
 
       const decision = checkBudget(BUDGET_FILE, DAILY_BUDGET_USD);

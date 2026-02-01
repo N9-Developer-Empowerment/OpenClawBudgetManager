@@ -5,6 +5,7 @@ import {
   loadBudget,
   recordTransaction,
   getRemainingBudget,
+  getLastTransactionTimestamp,
   type BudgetData,
 } from "../src/budget-store.js";
 
@@ -123,6 +124,30 @@ describe("Budget Store", () => {
       recordTransaction(TEST_BUDGET_FILE, "claude-sonnet-4-20250514", 1000, 500, 2.0);
 
       expect(getRemainingBudget(TEST_BUDGET_FILE)).toBe(3.0);
+    });
+  });
+
+  describe("getLastTransactionTimestamp", () => {
+    it("should return null when no transactions exist", () => {
+      loadBudget(TEST_BUDGET_FILE, 5.0);
+
+      expect(getLastTransactionTimestamp(TEST_BUDGET_FILE)).toBeNull();
+    });
+
+    it("should return null when file does not exist", () => {
+      expect(getLastTransactionTimestamp("/nonexistent/file.json")).toBeNull();
+    });
+
+    it("should return the timestamp of the last transaction", () => {
+      loadBudget(TEST_BUDGET_FILE, 5.0);
+      recordTransaction(TEST_BUDGET_FILE, "model-a", 100, 50, 0.01);
+      recordTransaction(TEST_BUDGET_FILE, "model-b", 200, 100, 0.02);
+
+      const ts = getLastTransactionTimestamp(TEST_BUDGET_FILE);
+      expect(ts).not.toBeNull();
+
+      const data = readBudgetFile();
+      expect(ts).toBe(data.transactions[1].timestamp);
     });
   });
 

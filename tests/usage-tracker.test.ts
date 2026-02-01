@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { loadBudget } from "../src/budget-store.js";
+import { loadBudget, recordTransaction, getLastTransactionTimestamp } from "../src/budget-store.js";
 import {
   aggregateUsageFromMessages,
   calculateCost,
@@ -156,6 +156,57 @@ describe("Usage Tracker", () => {
     it("should return null for empty messages array", () => {
       expect(aggregateUsageFromMessages([], "unknown", FREE)).toBeNull();
     });
+
+    it("should skip messages with timestamps at or before the since cutoff", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: "old response",
+          model: "claude-opus-4-5",
+          provider: "anthropic",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          usage: { input: 500, output: 100, cost: { total: 0.05 } },
+        },
+        {
+          role: "assistant",
+          content: "new response",
+          model: "qwen3:8b",
+          provider: "ollama",
+          timestamp: "2026-02-01T11:00:00.000Z",
+          usage: { input: 200, output: 50, cost: { total: 0 } },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "unknown", FREE, "2026-02-01T10:00:00.000Z");
+
+      expect(result).not.toBeNull();
+      expect(result!.input_tokens).toBe(200);
+      expect(result!.output_tokens).toBe(50);
+      expect(result!.cost).toBe(0);
+      expect(result!.model).toBe("ollama/qwen3:8b");
+    });
+
+    it("should count all messages when since is null", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: "first",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          usage: { input: 100, output: 50, cost: { total: 0.01 } },
+        },
+        {
+          role: "assistant",
+          content: "second",
+          timestamp: "2026-02-01T11:00:00.000Z",
+          usage: { input: 200, output: 100, cost: { total: 0.02 } },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "unknown", FREE, null);
+
+      expect(result!.input_tokens).toBe(300);
+      expect(result!.cost).toBeCloseTo(0.03);
+    });
   });
 
   describe("calculateCost", () => {
@@ -240,6 +291,57 @@ describe("Usage Tracker", () => {
 
       const data = JSON.parse(fs.readFileSync(TEST_BUDGET_FILE, "utf-8"));
       expect(data.transactions).toHaveLength(0);
+    });
+
+    it("should not re-count messages from previous turns", () => {
+      // Use fake timers so transaction timestamps align with message timestamps
+      vi.useFakeTimers();
+      try {
+        const today = new Date().toISOString().split("T")[0];
+        const t1 = `${today}T10:00:00.000Z`;
+        const t1Record = `${today}T10:00:01.000Z`;
+        const t2 = `${today}T11:00:00.000Z`;
+
+        vi.setSystemTime(new Date(t1Record));
+        loadBudget(TEST_BUDGET_FILE, 5.0);
+
+        // First turn: cloud model
+        const turn1Messages = [
+          {
+            role: "assistant",
+            content: "cloud response",
+            model: "claude-opus-4-5",
+            provider: "anthropic",
+            timestamp: t1,
+            usage: { input: 500, output: 200, cost: { total: 1.50 } },
+          },
+        ];
+        trackUsage(TEST_BUDGET_FILE, "unknown", turn1Messages, FREE, 5.0);
+
+        // Second turn: same conversation history + new local message
+        const turn2Messages = [
+          ...turn1Messages,
+          {
+            role: "assistant",
+            content: "local response",
+            model: "qwen3:8b",
+            provider: "ollama",
+            timestamp: t2,
+            usage: { input: 200, output: 50, cost: { total: 0 } },
+          },
+        ];
+        vi.setSystemTime(new Date(`${today}T11:00:01.000Z`));
+        trackUsage(TEST_BUDGET_FILE, "unknown", turn2Messages, FREE, 5.0);
+
+        const data = JSON.parse(fs.readFileSync(TEST_BUDGET_FILE, "utf-8"));
+        expect(data.transactions).toHaveLength(2);
+        expect(data.transactions[0].cost_usd).toBe(1.50);
+        expect(data.transactions[1].cost_usd).toBe(0);
+        expect(data.transactions[1].model).toBe("ollama/qwen3:8b");
+        expect(data.spent_today_usd).toBe(1.50);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

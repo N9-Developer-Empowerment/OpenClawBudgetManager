@@ -77,3 +77,13 @@ export function getRemainingBudget(filePath: string): number {
   return data.daily_budget_usd - data.spent_today_usd;
 }
 
+export function getLastTransactionTimestamp(filePath: string): string | null {
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as BudgetData;
+    if (data.transactions.length === 0) return null;
+    return data.transactions[data.transactions.length - 1].timestamp;
+  } catch {
+    return null;
+  }
+}
+
