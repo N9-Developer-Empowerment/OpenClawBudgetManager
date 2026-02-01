@@ -1,5 +1,9 @@
 # OpenClaw Budget Manager
 
+<p align="center">
+  <img src="asset/logo.png" alt="OpenClaw Budget Manager logo" width="480" />
+</p>
+
 An OpenClaw plugin that tracks daily API spend and **actively switches** to local Ollama models when the budget is exhausted. When the budget resets the next day, it restores the original cloud model automatically.
 
 ## How it works
