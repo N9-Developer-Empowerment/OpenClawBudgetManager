@@ -21,14 +21,31 @@ import {
   writeOpenClawConfig,
   switchToLocalModel,
   restoreCloudModel,
+  switchToProvider,
+  restoreFirstProvider,
   type SwitcherState,
 } from "../src/model-switcher.js";
+import { loadChainBudget } from "../src/chain-budget-store.js";
+import type { ChainConfig } from "../src/provider-chain.js";
 
 const mockedExecSync = vi.mocked(execSync);
 
 const TEST_DATA_DIR = path.join(import.meta.dirname, "..", "data-test-switcher");
 const TEST_STATE_FILE = path.join(TEST_DATA_DIR, "switcher-state.json");
 const TEST_CONFIG_FILE = path.join(TEST_DATA_DIR, "openclaw.json");
+const TEST_CHAIN_CONFIG_FILE = path.join(TEST_DATA_DIR, "provider-chain.json");
+const TEST_CHAIN_BUDGET_FILE = path.join(TEST_DATA_DIR, "chain-budget.json");
+
+function createTestChainConfig(): ChainConfig {
+  return {
+    providers: [
+      { id: "anthropic", priority: 1, maxDailyUsd: 3.0, enabled: true, models: { default: "claude-sonnet-4", coding: "claude-sonnet-4", vision: "claude-sonnet-4" } },
+      { id: "moonshot", priority: 2, maxDailyUsd: 2.0, enabled: true, models: { default: "kimi-k2.5", vision: "kimi-k2.5" } },
+      { id: "deepseek", priority: 3, maxDailyUsd: 1.0, enabled: true, models: { default: "deepseek-chat", coding: "deepseek-chat" } },
+      { id: "ollama", priority: 99, maxDailyUsd: 0, enabled: true, models: { default: "qwen3:8b", coding: "qwen3-coder:30b", vision: "qwen3-vl:8b" } },
+    ],
+  };
+}
 
 const LOCAL_MODELS = {
   general: "qwen3:8b",
@@ -262,6 +279,197 @@ describe("Model Switcher", () => {
       const result = await restoreCloudModel(TEST_STATE_FILE, mockLogger);
 
       expect(result).toBe(false);
+    });
+  });
+
+  describe("switchToProvider", () => {
+    beforeEach(() => {
+      const chainConfig = createTestChainConfig();
+      fs.writeFileSync(TEST_CHAIN_CONFIG_FILE, JSON.stringify(chainConfig, null, 2));
+      loadChainBudget(TEST_CHAIN_BUDGET_FILE, chainConfig);
+    });
+
+    it("should switch to specified provider", async () => {
+      writeTestConfig("anthropic/claude-sonnet-4");
+
+      const result = await switchToProvider(
+        "moonshot",
+        "general",
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(true);
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("moonshot/kimi-k2.5");
+      expect(mockedExecSync).toHaveBeenCalledWith(
+        "openclaw gateway restart",
+        expect.objectContaining({ timeout: 15_000 }),
+      );
+    });
+
+    it("should use correct model for task type", async () => {
+      writeTestConfig("anthropic/claude-sonnet-4");
+
+      await switchToProvider(
+        "deepseek",
+        "coding",
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("deepseek/deepseek-chat");
+    });
+
+    it("should fail for unknown provider", async () => {
+      writeTestConfig();
+
+      const result = await switchToProvider(
+        "unknown",
+        "general",
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(false);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("not found"),
+      );
+    });
+
+    it("should fail for disabled provider", async () => {
+      const config = createTestChainConfig();
+      config.providers[1].enabled = false;
+      fs.writeFileSync(TEST_CHAIN_CONFIG_FILE, JSON.stringify(config, null, 2));
+
+      const result = await switchToProvider(
+        "moonshot",
+        "general",
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(false);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("disabled"),
+      );
+    });
+
+    it("should check Ollama availability when switching to ollama", async () => {
+      writeTestConfig();
+      mockedIsOllamaRunning.mockResolvedValue(false);
+
+      const result = await switchToProvider(
+        "ollama",
+        "general",
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(false);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("not running"),
+      );
+    });
+
+    it("should record switch in chain budget", async () => {
+      writeTestConfig("anthropic/claude-sonnet-4");
+
+      await switchToProvider(
+        "moonshot",
+        "general",
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      const budgetData = JSON.parse(fs.readFileSync(TEST_CHAIN_BUDGET_FILE, "utf-8"));
+      expect(budgetData.activeProvider).toBe("moonshot");
+      expect(budgetData.switchHistory.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("restoreFirstProvider", () => {
+    beforeEach(() => {
+      const chainConfig = createTestChainConfig();
+      fs.writeFileSync(TEST_CHAIN_CONFIG_FILE, JSON.stringify(chainConfig, null, 2));
+    });
+
+    it("should restore to first provider in chain", async () => {
+      writeTestConfig("deepseek/deepseek-chat");
+      const config = createTestChainConfig();
+      const budgetData = {
+        date: new Date().toISOString().split("T")[0],
+        providers: {
+          anthropic: { spentUsd: 0, exhausted: false },
+          moonshot: { spentUsd: 0, exhausted: false },
+          deepseek: { spentUsd: 0, exhausted: false },
+          ollama: { spentUsd: 0, exhausted: false },
+        },
+        transactions: [],
+        activeProvider: "deepseek",
+        switchHistory: [],
+      };
+      fs.writeFileSync(TEST_CHAIN_BUDGET_FILE, JSON.stringify(budgetData, null, 2));
+
+      const result = await restoreFirstProvider(
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(true);
+      const openclawConfig = readTestConfig();
+      expect(openclawConfig.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4");
+    });
+
+    it("should skip if already on first provider", async () => {
+      writeTestConfig("anthropic/claude-sonnet-4");
+      const config = createTestChainConfig();
+      loadChainBudget(TEST_CHAIN_BUDGET_FILE, config);
+
+      const result = await restoreFirstProvider(
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(false);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.stringContaining("Already on first provider"),
+      );
+    });
+
+    it("should update chain budget active provider", async () => {
+      writeTestConfig("deepseek/deepseek-chat");
+      const budgetData = {
+        date: new Date().toISOString().split("T")[0],
+        providers: {
+          anthropic: { spentUsd: 0, exhausted: false },
+          moonshot: { spentUsd: 0, exhausted: false },
+          deepseek: { spentUsd: 0, exhausted: false },
+          ollama: { spentUsd: 0, exhausted: false },
+        },
+        transactions: [],
+        activeProvider: "deepseek",
+        switchHistory: [],
+      };
+      fs.writeFileSync(TEST_CHAIN_BUDGET_FILE, JSON.stringify(budgetData, null, 2));
+
+      await restoreFirstProvider(
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      const newBudgetData = JSON.parse(fs.readFileSync(TEST_CHAIN_BUDGET_FILE, "utf-8"));
+      expect(newBudgetData.activeProvider).toBe("anthropic");
     });
   });
 });

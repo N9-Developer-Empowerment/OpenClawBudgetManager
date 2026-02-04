@@ -4,6 +4,20 @@ import os from "node:os";
 import { execSync } from "node:child_process";
 import { isOllamaRunning, hasModel } from "./ollama-client.js";
 import type { TaskType } from "./budget-gate.js";
+import {
+  loadChainConfig,
+  applyEnvOverrides,
+  getEnabledProviders,
+  getProviderById,
+  getModelForTask,
+  resolveFullModelId,
+  type TaskType as ChainTaskType,
+} from "./provider-chain.js";
+import {
+  loadChainBudget,
+  setActiveProvider,
+  recordSwitch,
+} from "./chain-budget-store.js";
 
 export interface SwitcherState {
   mode: "cloud" | "local";
@@ -159,6 +173,124 @@ export async function restoreCloudModel(
   clearSwitcherState(statePath);
 
   logger.info(`[model-switcher] Restored cloud model: ${state.originalModel}, restarting gateway`);
+  restartGateway();
+  return true;
+}
+
+// Chain-aware provider switching
+
+export async function switchToProvider(
+  providerId: string,
+  taskType: TaskType,
+  chainConfigPath: string,
+  chainBudgetPath: string,
+  logger: Logger,
+): Promise<boolean> {
+  const rawConfig = loadChainConfig(chainConfigPath);
+  const config = applyEnvOverrides(rawConfig);
+  const provider = getProviderById(config, providerId);
+
+  if (!provider) {
+    logger.error(`[model-switcher] Provider ${providerId} not found in chain config`);
+    return false;
+  }
+
+  if (!provider.enabled) {
+    logger.warn(`[model-switcher] Provider ${providerId} is disabled`);
+    return false;
+  }
+
+  // Special handling for Ollama (local provider)
+  if (providerId === "ollama") {
+    const ollamaUp = await isOllamaRunning();
+    if (!ollamaUp) {
+      logger.warn("[model-switcher] Ollama is not running, cannot switch to local provider");
+      return false;
+    }
+
+    const targetModel = getModelForTask(provider, taskType as ChainTaskType);
+    const modelAvailable = await hasModel(targetModel);
+    if (!modelAvailable) {
+      const defaultModel = provider.models.default;
+      const defaultAvailable = await hasModel(defaultModel);
+      if (!defaultAvailable) {
+        logger.error(`[model-switcher] Ollama models not available: ${targetModel}, ${defaultModel}`);
+        return false;
+      }
+    }
+  }
+
+  const model = getModelForTask(provider, taskType as ChainTaskType);
+  const fullModelId = resolveFullModelId(providerId, model);
+
+  // Update OpenClaw config
+  const openclawConfig = readOpenClawConfig();
+  const currentModel = resolveCurrentModel(openclawConfig);
+  const updated = setActiveModel(openclawConfig, fullModelId);
+  writeOpenClawConfig(updated);
+
+  // Update chain budget state
+  const budgetData = loadChainBudget(chainBudgetPath, config);
+  const currentProviderId = budgetData.activeProvider;
+
+  if (currentProviderId !== providerId) {
+    recordSwitch(
+      chainBudgetPath,
+      currentProviderId,
+      providerId,
+      `Budget exhausted for ${currentProviderId}`,
+    );
+    logger.info(
+      `[model-switcher] Switching from ${currentProviderId} to ${providerId} (${currentModel} → ${fullModelId})`,
+    );
+  } else {
+    setActiveProvider(chainBudgetPath, providerId);
+  }
+
+  logger.info(`[model-switcher] Restarting gateway for provider switch`);
+  restartGateway();
+  return true;
+}
+
+export async function restoreFirstProvider(
+  chainConfigPath: string,
+  chainBudgetPath: string,
+  logger: Logger,
+): Promise<boolean> {
+  const rawConfig = loadChainConfig(chainConfigPath);
+  const config = applyEnvOverrides(rawConfig);
+  const enabled = getEnabledProviders(config);
+
+  if (enabled.length === 0) {
+    logger.error("[model-switcher] No enabled providers in chain config");
+    return false;
+  }
+
+  const firstProvider = enabled[0];
+  const budgetData = loadChainBudget(chainBudgetPath, config);
+  const currentProviderId = budgetData.activeProvider;
+
+  // If already on first provider, no need to switch
+  if (currentProviderId === firstProvider.id) {
+    logger.info(`[model-switcher] Already on first provider: ${firstProvider.id}`);
+    return false;
+  }
+
+  // Default to general task type for restore
+  const model = getModelForTask(firstProvider, "general");
+  const fullModelId = resolveFullModelId(firstProvider.id, model);
+
+  // Update OpenClaw config
+  const openclawConfig = readOpenClawConfig();
+  const updated = setActiveModel(openclawConfig, fullModelId);
+  writeOpenClawConfig(updated);
+
+  // Update chain budget state
+  setActiveProvider(chainBudgetPath, firstProvider.id);
+
+  logger.info(
+    `[model-switcher] Restored first provider: ${firstProvider.id} (${fullModelId}), restarting gateway`,
+  );
   restartGateway();
   return true;
 }

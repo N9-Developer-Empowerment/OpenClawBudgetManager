@@ -4,8 +4,12 @@ dist/
 
 # Budget runtime data
 data/budget.json
+data/chain-budget.json
 data/switcher-state.json
 data-test-*/
+
+# Local environment config (may contain API keys)
+.env
 
 # Plan files
 plan_*.md

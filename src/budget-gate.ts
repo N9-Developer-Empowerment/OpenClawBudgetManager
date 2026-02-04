@@ -1,4 +1,24 @@
 import { getRemainingBudget, loadBudget } from "./budget-store.js";
+import {
+  loadChainBudget,
+  getActiveProvider,
+  getExhaustedProviders,
+  getProviderStats,
+  type ChainBudgetData,
+} from "./chain-budget-store.js";
+import {
+  loadChainConfig,
+  applyEnvOverrides,
+  getEnabledProviders,
+  getProviderById,
+  getNextProvider,
+  getFirstAvailableProvider,
+  getModelForTask,
+  resolveFullModelId,
+  type ChainConfig,
+  type ProviderConfig,
+  type TaskType as ChainTaskType,
+} from "./provider-chain.js";
 
 export type TaskType = "coding" | "vision" | "general";
 
@@ -86,5 +106,111 @@ export function checkBudget(
     action: "allow",
     remaining_usd: remaining,
     percent_remaining: percent,
+  };
+}
+
+// Chain-aware budget decision types
+export interface ChainBudgetDecision {
+  action: "allow" | "switch_provider" | "all_exhausted";
+  currentProvider: string;
+  currentModel: string;
+  nextProvider?: string;
+  nextModel?: string;
+  providerRemaining: number;
+  providerPercent: number;
+  reason: string;
+  taskType?: TaskType;
+}
+
+export function checkChainBudget(
+  chainBudgetPath: string,
+  chainConfigPath: string,
+  prompt?: string,
+  messages?: unknown[],
+): ChainBudgetDecision {
+  const rawConfig = loadChainConfig(chainConfigPath);
+  const config = applyEnvOverrides(rawConfig);
+  const budgetData = loadChainBudget(chainBudgetPath, config);
+
+  const activeProviderId = getActiveProvider(budgetData);
+  const activeProvider = getProviderById(config, activeProviderId);
+
+  // Determine task type for model selection
+  const taskType = detectTaskType(prompt ?? "", messages ?? []);
+
+  // If active provider doesn't exist or is disabled, find first available
+  if (!activeProvider || !activeProvider.enabled) {
+    const exhausted = getExhaustedProviders(budgetData, config);
+    const firstAvailable = getFirstAvailableProvider(config, exhausted);
+
+    if (!firstAvailable) {
+      return {
+        action: "all_exhausted",
+        currentProvider: activeProviderId,
+        currentModel: "unknown",
+        providerRemaining: 0,
+        providerPercent: 0,
+        reason: "All providers are exhausted or disabled",
+        taskType,
+      };
+    }
+
+    const model = getModelForTask(firstAvailable, taskType);
+    return {
+      action: "switch_provider",
+      currentProvider: activeProviderId,
+      currentModel: "unknown",
+      nextProvider: firstAvailable.id,
+      nextModel: resolveFullModelId(firstAvailable.id, model),
+      providerRemaining: firstAvailable.maxDailyUsd,
+      providerPercent: 100,
+      reason: `Current provider ${activeProviderId} is disabled or missing`,
+      taskType,
+    };
+  }
+
+  const stats = getProviderStats(budgetData, activeProvider);
+  const currentModel = getModelForTask(activeProvider, taskType);
+
+  // Check if current provider is exhausted
+  if (stats.exhausted) {
+    const exhausted = getExhaustedProviders(budgetData, config);
+    const nextProvider = getNextProvider(config, activeProviderId, exhausted);
+
+    if (!nextProvider) {
+      return {
+        action: "all_exhausted",
+        currentProvider: activeProviderId,
+        currentModel: resolveFullModelId(activeProviderId, currentModel),
+        providerRemaining: 0,
+        providerPercent: 0,
+        reason: "All providers in the chain are exhausted",
+        taskType,
+      };
+    }
+
+    const nextModel = getModelForTask(nextProvider, taskType);
+    return {
+      action: "switch_provider",
+      currentProvider: activeProviderId,
+      currentModel: resolveFullModelId(activeProviderId, currentModel),
+      nextProvider: nextProvider.id,
+      nextModel: resolveFullModelId(nextProvider.id, nextModel),
+      providerRemaining: stats.remaining,
+      providerPercent: stats.percent,
+      reason: `Provider ${activeProviderId} budget exhausted ($${stats.spent.toFixed(2)}/$${activeProvider.maxDailyUsd.toFixed(2)})`,
+      taskType,
+    };
+  }
+
+  // Provider has budget remaining
+  return {
+    action: "allow",
+    currentProvider: activeProviderId,
+    currentModel: resolveFullModelId(activeProviderId, currentModel),
+    providerRemaining: stats.remaining,
+    providerPercent: stats.percent,
+    reason: `Provider ${activeProviderId} has $${stats.remaining.toFixed(2)} remaining (${stats.percent}%)`,
+    taskType,
   };
 }

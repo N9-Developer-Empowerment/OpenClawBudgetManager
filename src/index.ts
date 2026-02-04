@@ -1,44 +1,99 @@
+import fs from "node:fs";
 import path from "node:path";
-import { trackUsage, type ModelCost } from "./usage-tracker.js";
-import { checkBudget, getLocalModels } from "./budget-gate.js";
-import { loadSwitcherState, switchToLocalModel, restoreCloudModel } from "./model-switcher.js";
+import { trackUsage, trackChainUsage, isLocalModel, type ModelCost } from "./usage-tracker.js";
+import { checkBudget, checkChainBudget, getLocalModels } from "./budget-gate.js";
+import {
+  loadSwitcherState,
+  switchToLocalModel,
+  restoreCloudModel,
+  switchToProvider,
+  restoreFirstProvider,
+} from "./model-switcher.js";
+import { loadChainConfig, applyEnvOverrides } from "./provider-chain.js";
+import { loadChainBudget, getActiveProvider } from "./chain-budget-store.js";
+
+// Load .env file from plugin directory if it exists
+const ENV_FILE = path.join(import.meta.dirname, "..", ".env");
+if (fs.existsSync(ENV_FILE)) {
+  const envContent = fs.readFileSync(ENV_FILE, "utf-8");
+  for (const line of envContent.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex === -1) continue;
+    const key = trimmed.slice(0, eqIndex).trim();
+    const value = trimmed.slice(eqIndex + 1).trim();
+    // Only set if not already in environment
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
 
 const DAILY_BUDGET_USD = parseFloat(process.env.DAILY_BUDGET_USD ?? "5.00");
 const BUDGET_DATA_DIR = process.env.BUDGET_DATA_DIR ?? path.join(import.meta.dirname, "..", "data");
 const BUDGET_FILE = path.join(BUDGET_DATA_DIR, "budget.json");
 const SWITCHER_STATE_FILE = path.join(BUDGET_DATA_DIR, "switcher-state.json");
 
+// Chain budget paths
+const CHAIN_CONFIG_FILE = path.join(BUDGET_DATA_DIR, "provider-chain.json");
+const CHAIN_BUDGET_FILE = path.join(BUDGET_DATA_DIR, "chain-budget.json");
+
+// Enable chain mode via environment variable
+const USE_CHAIN_MODE = process.env.USE_CHAIN_MODE?.toLowerCase() === "true";
+
 const DEFAULT_COSTS: Record<string, ModelCost> = {
   // Anthropic (bare and provider-prefixed variants)
   "claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
+  "anthropic/claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
   "anthropic/claude-sonnet-4": { input: 0.003, output: 0.015 },
   "claude-opus-4-20250514": { input: 0.015, output: 0.075 },
+  "anthropic/claude-opus-4-20250514": { input: 0.015, output: 0.075 },
   "anthropic/claude-opus-4-5": { input: 0.015, output: 0.075 },
   "anthropic/claude-opus-4": { input: 0.015, output: 0.075 },
   "claude-3-5-haiku-20241022": { input: 0.0008, output: 0.004 },
   "anthropic/claude-3-5-haiku": { input: 0.0008, output: 0.004 },
+
+  // Moonshot
+  "kimi-k2.5": { input: 0.003, output: 0.012 },
+  "moonshot/kimi-k2.5": { input: 0.003, output: 0.012 },
+
+  // DeepSeek
+  "deepseek-chat": { input: 0.00028, output: 0.00042 },
+  "deepseek/deepseek-chat": { input: 0.00028, output: 0.00042 },
+  "deepseek-reasoner": { input: 0.00055, output: 0.00219 },
+  "deepseek/deepseek-reasoner": { input: 0.00055, output: 0.00219 },
+
+  // Google Gemini
+  "gemini-2.5-flash": { input: 0.000075, output: 0.0003 },
+  "google/gemini-2.5-flash": { input: 0.000075, output: 0.0003 },
+  "gemini-2.0-flash": { input: 0.0001, output: 0.0004 },
+  "google/gemini-2.0-flash": { input: 0.0001, output: 0.0004 },
+  "gemini-2.5-pro": { input: 0.00125, output: 0.01 },
+  "google/gemini-2.5-pro": { input: 0.00125, output: 0.01 },
+  "gemini-2.5-pro-preview-05-06": { input: 0.00125, output: 0.01 },
+  "google/gemini-2.5-pro-preview-05-06": { input: 0.00125, output: 0.01 },
+
   // OpenAI
   "gpt-4o": { input: 0.0025, output: 0.01 },
   "openai/gpt-4o": { input: 0.0025, output: 0.01 },
   "gpt-4o-mini": { input: 0.00015, output: 0.0006 },
   "openai/gpt-4o-mini": { input: 0.00015, output: 0.0006 },
-  // DeepSeek
-  "deepseek-chat": { input: 0.00014, output: 0.00028 },
-  "deepseek/deepseek-chat": { input: 0.00014, output: 0.00028 },
-  "deepseek-reasoner": { input: 0.00055, output: 0.00219 },
-  "deepseek/deepseek-reasoner": { input: 0.00055, output: 0.00219 },
-  // Gemini
-  "gemini-2.0-flash": { input: 0.0001, output: 0.0004 },
-  "google/gemini-2.0-flash": { input: 0.0001, output: 0.0004 },
-  "gemini-2.5-pro-preview-05-06": { input: 0.00125, output: 0.01 },
-  "google/gemini-2.5-pro-preview-05-06": { input: 0.00125, output: 0.01 },
+
   // Local (free) — Qwen 3 via Ollama
+  "qwen3:8b": { input: 0, output: 0 },
   "ollama/qwen3:8b": { input: 0, output: 0 },
+  "qwen3-coder:30b": { input: 0, output: 0 },
   "ollama/qwen3-coder:30b": { input: 0, output: 0 },
+  "qwen3-vl:8b": { input: 0, output: 0 },
   "ollama/qwen3-vl:8b": { input: 0, output: 0 },
 };
 
 function resolveModelCost(modelId: string): ModelCost {
+  // Local models are always free
+  if (isLocalModel(modelId)) {
+    return { input: 0, output: 0 };
+  }
   return DEFAULT_COSTS[modelId] ?? { input: 0, output: 0 };
 }
 
@@ -59,7 +114,15 @@ interface OpenClawPluginApi {
 }
 
 export default function register(api: OpenClawPluginApi) {
-  api.logger.info("[budget-manager] Plugin loaded. Daily budget: $" + DAILY_BUDGET_USD);
+  if (USE_CHAIN_MODE) {
+    registerChainMode(api);
+  } else {
+    registerLegacyMode(api);
+  }
+}
+
+function registerLegacyMode(api: OpenClawPluginApi) {
+  api.logger.info("[budget-manager] Plugin loaded (legacy mode). Daily budget: $" + DAILY_BUDGET_USD);
 
   // On load: if we previously switched to local but budget has reset, restore cloud model
   const switcherState = loadSwitcherState(SWITCHER_STATE_FILE);
@@ -141,6 +204,122 @@ export default function register(api: OpenClawPluginApi) {
       }
     } catch (err) {
       api.logger.error("[budget-manager] Failed to track usage:", err);
+    }
+  });
+}
+
+function registerChainMode(api: OpenClawPluginApi) {
+  api.logger.info("[budget-manager] Plugin loaded (chain mode). Provider chain enabled.");
+
+  // On load: check if date changed and restore first provider if needed
+  try {
+    const rawConfig = loadChainConfig(CHAIN_CONFIG_FILE);
+    const config = applyEnvOverrides(rawConfig);
+    const budgetData = loadChainBudget(CHAIN_BUDGET_FILE, config);
+    const todayString = new Date().toISOString().split("T")[0];
+
+    if (budgetData.date !== todayString) {
+      api.logger.info("[budget-manager] New day detected, restoring first provider");
+      restoreFirstProvider(CHAIN_CONFIG_FILE, CHAIN_BUDGET_FILE, api.logger).catch((err) => {
+        api.logger.error("[budget-manager] Failed to restore first provider:", err);
+      });
+    } else {
+      const activeProvider = getActiveProvider(budgetData);
+      api.logger.info(`[budget-manager] Active provider: ${activeProvider}`);
+    }
+  } catch (err) {
+    api.logger.error("[budget-manager] Failed to initialize chain mode:", err);
+  }
+
+  // Hook: before_agent_start — check chain budget and provide informational context
+  api.on(
+    "before_agent_start",
+    (_event, _ctx) => {
+      try {
+        const prompt = (_event.prompt as string) ?? "";
+        const messages = (_event.messages as unknown[]) ?? [];
+        const decision = checkChainBudget(CHAIN_BUDGET_FILE, CHAIN_CONFIG_FILE, prompt, messages);
+
+        if (decision.action === "all_exhausted") {
+          api.logger.warn(
+            `[budget-manager] All providers exhausted! ${decision.reason}`,
+          );
+          return undefined;
+        }
+
+        if (decision.action === "switch_provider") {
+          api.logger.info(
+            `[budget-manager] Provider ${decision.currentProvider} exhausted. ` +
+              `Will switch to ${decision.nextProvider} after this request.`,
+          );
+          return undefined;
+        }
+
+        api.logger.debug(
+          `[budget-manager] Using ${decision.currentProvider}: ` +
+            `$${decision.providerRemaining.toFixed(2)} remaining (${decision.providerPercent}%)`,
+        );
+
+        return undefined;
+      } catch (err) {
+        api.logger.error("[budget-manager] Failed to check chain budget:", err);
+        return undefined;
+      }
+    },
+    { priority: 100 },
+  );
+
+  // Hook: agent_end — track usage to provider, then switch if exhausted
+  api.on("agent_end", (event, _ctx) => {
+    try {
+      const messages = event.messages as unknown[];
+      if (!messages?.length) return;
+
+      const modelId = (event.model as string) ?? "unknown";
+      const cost = resolveModelCost(modelId);
+
+      const rawConfig = loadChainConfig(CHAIN_CONFIG_FILE);
+      const config = applyEnvOverrides(rawConfig);
+
+      const result = trackChainUsage(CHAIN_BUDGET_FILE, config, modelId, messages, cost);
+      if (!result) return;
+
+      api.logger.info(
+        `[budget-manager] Tracked ${result.providerId}: ` +
+          `${result.aggregated.input_tokens} in, ${result.aggregated.output_tokens} out, ` +
+          `$${result.aggregated.cost.toFixed(4)}`,
+      );
+
+      // Check if we need to switch providers
+      const decision = checkChainBudget(CHAIN_BUDGET_FILE, CHAIN_CONFIG_FILE);
+
+      if (decision.action === "switch_provider" && decision.nextProvider && decision.taskType) {
+        api.logger.info(
+          `[budget-manager] Switching from ${decision.currentProvider} to ${decision.nextProvider}`,
+        );
+
+        switchToProvider(
+          decision.nextProvider,
+          decision.taskType,
+          CHAIN_CONFIG_FILE,
+          CHAIN_BUDGET_FILE,
+          api.logger,
+        )
+          .then((switched) => {
+            if (switched) {
+              api.logger.info(
+                `[budget-manager] Switched to ${decision.nextProvider}, gateway will restart`,
+              );
+            }
+          })
+          .catch((err) => {
+            api.logger.error("[budget-manager] Failed to switch provider:", err);
+          });
+      } else if (decision.action === "all_exhausted") {
+        api.logger.warn("[budget-manager] All providers exhausted, no fallback available");
+      }
+    } catch (err) {
+      api.logger.error("[budget-manager] Failed to track chain usage:", err);
     }
   });
 }

@@ -1,0 +1,67 @@
+{
+  "providers": [
+    {
+      "id": "anthropic",
+      "priority": 1,
+      "maxDailyUsd": 5.00,
+      "enabled": true,
+      "models": {
+        "default": "claude-sonnet-4-20250514",
+        "coding": "claude-sonnet-4-20250514",
+        "vision": "claude-sonnet-4-20250514"
+      }
+    },
+    {
+      "id": "moonshot",
+      "priority": 2,
+      "maxDailyUsd": 5.00,
+      "enabled": true,
+      "models": {
+        "default": "kimi-k2.5",
+        "vision": "kimi-k2.5"
+      }
+    },
+    {
+      "id": "deepseek",
+      "priority": 3,
+      "maxDailyUsd": 5.00,
+      "enabled": true,
+      "models": {
+        "default": "deepseek-chat",
+        "coding": "deepseek-chat"
+      }
+    },
+    {
+      "id": "google",
+      "priority": 4,
+      "maxDailyUsd": 3.00,
+      "enabled": true,
+      "models": {
+        "default": "gemini-2.5-flash",
+        "vision": "gemini-2.5-pro"
+      }
+    },
+    {
+      "id": "openai",
+      "priority": 5,
+      "maxDailyUsd": 3.00,
+      "enabled": true,
+      "models": {
+        "default": "gpt-4o-mini",
+        "coding": "gpt-4o",
+        "vision": "gpt-4o"
+      }
+    },
+    {
+      "id": "ollama",
+      "priority": 99,
+      "maxDailyUsd": 0,
+      "enabled": true,
+      "models": {
+        "default": "qwen3:8b",
+        "coding": "qwen3-coder:30b",
+        "vision": "qwen3-vl:8b"
+      }
+    }
+  ]
+}

@@ -1,4 +1,11 @@
 import { loadBudget, recordTransaction, getLastTransactionTimestamp } from "./budget-store.js";
+import {
+  loadChainBudget,
+  recordProviderTransaction,
+  getLastTransactionTimestamp as getChainLastTimestamp,
+  type ChainBudgetData,
+} from "./chain-budget-store.js";
+import type { ChainConfig } from "./provider-chain.js";
 
 export interface ModelCost {
   input: number;
@@ -49,11 +56,26 @@ export interface AggregatedUsage {
   cost: number;
 }
 
+export function isLocalModel(modelId: string): boolean {
+  // Check for ollama prefix
+  if (modelId.startsWith("ollama/")) return true;
+
+  // Check for common local model patterns (Ollama model names)
+  const lowerModel = modelId.toLowerCase();
+  const localPatterns = [
+    "qwen", "llama", "mistral", "codellama", "deepseek-coder",
+    "phi", "gemma", "vicuna", "orca", "neural-chat", "starling",
+    "openchat", "zephyr", "dolphin", "nous-hermes", "yi:",
+  ];
+
+  return localPatterns.some((pattern) => lowerModel.includes(pattern));
+}
+
 function isFreeMessage(msg: Record<string, unknown>): boolean {
   const provider = msg.provider as string | undefined;
   if (provider === "ollama") return true;
   const model = msg.model as string | undefined;
-  if (model && model.startsWith("ollama/")) return true;
+  if (model && isLocalModel(model)) return true;
   return false;
 }
 
@@ -68,7 +90,7 @@ export function aggregateUsageFromMessages(
   let totalCost = 0;
   let resolvedModel = fallbackModelId;
   let found = false;
-  const fallbackIsFree = fallbackModelId.startsWith("ollama/");
+  const fallbackIsFree = isLocalModel(fallbackModelId);
 
   for (const raw of messages) {
     const msg = raw as Record<string, unknown>;
@@ -151,4 +173,77 @@ export function trackUsage(
     aggregated.output_tokens,
     aggregated.cost,
   );
+}
+
+// Provider detection from model ID
+const PROVIDER_PREFIXES = [
+  "anthropic",
+  "moonshot",
+  "deepseek",
+  "google",
+  "openai",
+  "ollama",
+];
+
+export function detectProviderFromModel(modelId: string): string {
+  // Check for explicit provider prefix (e.g., "anthropic/claude-sonnet-4")
+  if (modelId.includes("/")) {
+    const [provider] = modelId.split("/");
+    if (PROVIDER_PREFIXES.includes(provider)) {
+      return provider;
+    }
+  }
+
+  // Detect by model name patterns
+  const lowerModel = modelId.toLowerCase();
+
+  if (lowerModel.includes("claude") || lowerModel.includes("anthropic")) {
+    return "anthropic";
+  }
+  if (lowerModel.includes("kimi") || lowerModel.includes("moonshot")) {
+    return "moonshot";
+  }
+  if (lowerModel.includes("deepseek")) {
+    return "deepseek";
+  }
+  if (lowerModel.includes("gemini") || lowerModel.includes("google")) {
+    return "google";
+  }
+  if (lowerModel.includes("gpt") || lowerModel.includes("openai")) {
+    return "openai";
+  }
+  if (lowerModel.includes("qwen") || lowerModel.includes("llama") || lowerModel.includes("ollama")) {
+    return "ollama";
+  }
+
+  // Default to anthropic if unknown
+  return "anthropic";
+}
+
+// Chain-aware usage tracking
+export function trackChainUsage(
+  chainBudgetPath: string,
+  chainConfig: ChainConfig,
+  modelId: string,
+  messages: unknown[],
+  cost: ModelCost,
+): { providerId: string; aggregated: AggregatedUsage } | null {
+  const budgetData = loadChainBudget(chainBudgetPath, chainConfig);
+  const since = getChainLastTimestamp(budgetData);
+  const aggregated = aggregateUsageFromMessages(messages, modelId, cost, since);
+
+  if (!aggregated) return null;
+
+  const providerId = detectProviderFromModel(aggregated.model);
+
+  recordProviderTransaction(
+    chainBudgetPath,
+    providerId,
+    aggregated.model,
+    aggregated.input_tokens,
+    aggregated.output_tokens,
+    aggregated.cost,
+  );
+
+  return { providerId, aggregated };
 }
