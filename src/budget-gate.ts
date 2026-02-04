@@ -21,6 +21,7 @@ import {
 } from "./provider-chain.js";
 
 export type TaskType = "coding" | "vision" | "general";
+export type TaskComplexity = "simple" | "medium" | "complex";
 
 const DEFAULT_LOCAL_MODELS: Record<TaskType, string> = {
   coding: "qwen3-coder:30b",
@@ -43,6 +44,21 @@ const CODING_KEYWORDS =
 const CODE_FILE_EXTENSIONS =
   /\.(ts|js|tsx|jsx|py|go|rs|java|kt|rb|cpp|c|h|cs|swift|sh|yml|yaml|json|toml|sql|html|css|scss)\b/i;
 
+// Complexity detection patterns
+const COMPLEX_TASK_KEYWORDS =
+  /\b(architect|architecture|design|security|audit|review|analyze\s+thoroughly|think\s+carefully|deep\s+analysis|comprehensive|multi-file|refactor\s+entire|rewrite|migrate|optimize\s+performance|scalability|concurrent|parallel|distributed|critical|production|deployment|infrastructure)\b/i;
+
+const MEDIUM_TASK_KEYWORDS =
+  /\b(implement|create|build|add\s+feature|fix\s+bug|update|modify|change|extend|integrate|connect|configure|setup|install|write\s+tests|test\s+coverage|documentation|explain|describe|compare|evaluate)\b/i;
+
+// Heartbeat/ping detection patterns
+const HEARTBEAT_PATTERNS = [
+  /^\s*(ping|pong|status|health|alive|ok\??|test|echo|heartbeat|check)\s*$/i,
+  /^\s*are\s+you\s+(there|alive|ok|working)\s*\??\s*$/i,
+  /^\s*hello\s*\??\s*$/i,
+  /^\s*hi\s*$/i,
+];
+
 export function detectTaskType(prompt: string, messages: unknown[]): TaskType {
   const hasImage = messages.some((msg) => {
     if (typeof msg !== "object" || msg === null) return false;
@@ -63,6 +79,75 @@ export function detectTaskType(prompt: string, messages: unknown[]): TaskType {
   }
 
   return "general";
+}
+
+/**
+ * Detect task complexity to enable smart model routing.
+ * - Simple: Short prompts, single-turn Q&A, basic formatting, status checks
+ * - Medium: Code changes, multi-step instructions, analysis
+ * - Complex: Architecture decisions, security review, multi-file refactors
+ */
+export function detectTaskComplexity(prompt: string, messages: unknown[]): TaskComplexity {
+  const promptLength = prompt.length;
+  const messageCount = messages.length;
+
+  // Check for complex task indicators first (keywords take priority)
+  if (COMPLEX_TASK_KEYWORDS.test(prompt)) {
+    return "complex";
+  }
+
+  // Large context or long conversation suggests complexity
+  const totalContentLength = messages.reduce<number>((acc, msg) => {
+    if (typeof msg !== "object" || msg === null) return acc;
+    const content = (msg as Record<string, unknown>).content;
+    if (typeof content === "string") return acc + content.length;
+    if (Array.isArray(content)) {
+      return acc + content.reduce<number>((sum, block) => {
+        if (typeof block === "object" && block !== null) {
+          const text = (block as Record<string, unknown>).text;
+          if (typeof text === "string") return sum + text.length;
+        }
+        return sum;
+      }, 0);
+    }
+    return acc;
+  }, 0);
+
+  // Very large context suggests complex task
+  if (totalContentLength > 50000 || messageCount > 10) {
+    return "complex";
+  }
+
+  // Check for medium task indicators
+  if (MEDIUM_TASK_KEYWORDS.test(prompt)) {
+    return "medium";
+  }
+
+  // Medium-length prompts default to medium complexity
+  if (promptLength > 200 || messageCount > 3) {
+    return "medium";
+  }
+
+  return "simple";
+}
+
+/**
+ * Detect if a message is a heartbeat/health check.
+ * These can be routed to free Ollama models.
+ */
+export function isHeartbeatMessage(prompt: string, messages: unknown[]): boolean {
+  // Must be a very short prompt
+  if (prompt.length > 50) {
+    return false;
+  }
+
+  // Must have no significant conversation history
+  if (messages.length > 1) {
+    return false;
+  }
+
+  // Check against heartbeat patterns
+  return HEARTBEAT_PATTERNS.some((pattern) => pattern.test(prompt));
 }
 
 export interface BudgetDecision {

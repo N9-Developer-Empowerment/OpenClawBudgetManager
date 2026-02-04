@@ -6,6 +6,8 @@ import {
   checkBudget,
   checkChainBudget,
   detectTaskType,
+  detectTaskComplexity,
+  isHeartbeatMessage,
   getLocalModels,
 } from "../src/budget-gate.js";
 import { loadChainBudget, recordProviderTransaction } from "../src/chain-budget-store.js";
@@ -71,6 +73,102 @@ describe("Budget Gate", () => {
       ];
 
       expect(detectTaskType("debug this function", messages)).toBe("vision");
+    });
+  });
+
+  describe("detectTaskComplexity", () => {
+    it("should return 'simple' for very short prompts with no history", () => {
+      expect(detectTaskComplexity("hi", [])).toBe("simple");
+      expect(detectTaskComplexity("what time is it?", [])).toBe("simple");
+      expect(detectTaskComplexity("thanks", [])).toBe("simple");
+    });
+
+    it("should return 'complex' for architecture and security keywords", () => {
+      expect(detectTaskComplexity("design the architecture for this system", [])).toBe("complex");
+      expect(detectTaskComplexity("perform a security audit of this code", [])).toBe("complex");
+      expect(detectTaskComplexity("analyze thoroughly the performance issues", [])).toBe("complex");
+      expect(detectTaskComplexity("refactor entire codebase for scalability", [])).toBe("complex");
+    });
+
+    it("should return 'medium' for typical implementation tasks", () => {
+      expect(detectTaskComplexity("implement a login form", [])).toBe("medium");
+      expect(detectTaskComplexity("add feature to export data", [])).toBe("medium");
+      expect(detectTaskComplexity("fix bug in the payment flow", [])).toBe("medium");
+      expect(detectTaskComplexity("write tests for the user service", [])).toBe("medium");
+    });
+
+    it("should return 'complex' for very large context", () => {
+      const longContent = "a".repeat(60000);
+      const messages = [{ role: "user", content: longContent }];
+
+      expect(detectTaskComplexity("what do you think?", messages)).toBe("complex");
+    });
+
+    it("should return 'complex' for long conversations", () => {
+      const messages = Array.from({ length: 15 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: `Message ${i}`,
+      }));
+
+      expect(detectTaskComplexity("continue", messages)).toBe("complex");
+    });
+
+    it("should return 'medium' for medium-length prompts without keywords", () => {
+      // Prompt > 200 chars without keywords triggers medium complexity
+      const mediumPrompt = "Can you help me with something? I have been looking at the results of our recent experiments and I notice some interesting patterns in the data that I would like to discuss with you. The numbers seem to show a correlation but I am not sure what it means exactly.";
+
+      expect(detectTaskComplexity(mediumPrompt, [])).toBe("medium");
+    });
+
+    it("should return 'simple' for prompts without complexity signals", () => {
+      expect(detectTaskComplexity("list all files", [])).toBe("simple");
+    });
+  });
+
+  describe("isHeartbeatMessage", () => {
+    it("should detect ping/pong messages", () => {
+      expect(isHeartbeatMessage("ping", [])).toBe(true);
+      expect(isHeartbeatMessage("pong", [])).toBe(true);
+      expect(isHeartbeatMessage("PING", [])).toBe(true);
+      expect(isHeartbeatMessage("  ping  ", [])).toBe(true);
+    });
+
+    it("should detect status/health check messages", () => {
+      expect(isHeartbeatMessage("status", [])).toBe(true);
+      expect(isHeartbeatMessage("health", [])).toBe(true);
+      expect(isHeartbeatMessage("heartbeat", [])).toBe(true);
+      expect(isHeartbeatMessage("alive", [])).toBe(true);
+      expect(isHeartbeatMessage("ok?", [])).toBe(true);
+    });
+
+    it("should detect are-you-there style messages", () => {
+      expect(isHeartbeatMessage("are you there?", [])).toBe(true);
+      expect(isHeartbeatMessage("are you alive?", [])).toBe(true);
+      expect(isHeartbeatMessage("are you ok?", [])).toBe(true);
+    });
+
+    it("should detect simple greetings as heartbeats", () => {
+      expect(isHeartbeatMessage("hello?", [])).toBe(true);
+      expect(isHeartbeatMessage("hi", [])).toBe(true);
+    });
+
+    it("should NOT detect normal prompts as heartbeats", () => {
+      expect(isHeartbeatMessage("ping the server for me", [])).toBe(false);
+      expect(isHeartbeatMessage("check the health of the database", [])).toBe(false);
+      expect(isHeartbeatMessage("what is my status?", [])).toBe(false);
+    });
+
+    it("should NOT detect heartbeat if prompt is too long", () => {
+      expect(isHeartbeatMessage("ping and then tell me all about the system architecture", [])).toBe(false);
+    });
+
+    it("should NOT detect heartbeat if there is conversation history", () => {
+      const messages = [
+        { role: "user", content: "help me with something" },
+        { role: "assistant", content: "sure, what do you need?" },
+      ];
+
+      expect(isHeartbeatMessage("ping", messages)).toBe(false);
     });
   });
 

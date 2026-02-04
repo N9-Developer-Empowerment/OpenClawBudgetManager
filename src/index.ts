@@ -8,6 +8,9 @@ import {
   restoreCloudModel,
   switchToProvider,
   restoreFirstProvider,
+  applyOptimizedConfig,
+  isOptimizationApplied,
+  getOptimizationRules,
 } from "./model-switcher.js";
 import { loadChainConfig, applyEnvOverrides } from "./provider-chain.js";
 import { loadChainBudget, getActiveProvider } from "./chain-budget-store.js";
@@ -226,25 +229,36 @@ function registerChainMode(api: OpenClawPluginApi) {
     } else {
       const activeProvider = getActiveProvider(budgetData);
       api.logger.info(`[budget-manager] Active provider: ${activeProvider}`);
+
+      // Only apply Anthropic optimization when on Anthropic
+      if (activeProvider === "anthropic" && !isOptimizationApplied()) {
+        api.logger.info("[budget-manager] Applying Anthropic optimization (Haiku default, Ollama heartbeat, caching)");
+        applyOptimizedConfig(api.logger);
+      }
     }
   } catch (err) {
     api.logger.error("[budget-manager] Failed to initialize chain mode:", err);
   }
 
-  // Hook: before_agent_start — check chain budget and provide informational context
+  // Hook: before_agent_start — inject optimization rules and check budget
   api.on(
     "before_agent_start",
     (_event, _ctx) => {
       try {
         const prompt = (_event.prompt as string) ?? "";
         const messages = (_event.messages as unknown[]) ?? [];
+
         const decision = checkChainBudget(CHAIN_BUDGET_FILE, CHAIN_CONFIG_FILE, prompt, messages);
+
+        // Get provider-aware optimization rules
+        // Anthropic rules include Haiku/Sonnet guidance; other providers get general rules
+        const optimizationRules = getOptimizationRules(decision.currentProvider);
 
         if (decision.action === "all_exhausted") {
           api.logger.warn(
             `[budget-manager] All providers exhausted! ${decision.reason}`,
           );
-          return undefined;
+          return { prependContext: optimizationRules };
         }
 
         if (decision.action === "switch_provider") {
@@ -252,7 +266,6 @@ function registerChainMode(api: OpenClawPluginApi) {
             `[budget-manager] Provider ${decision.currentProvider} exhausted. ` +
               `Will switch to ${decision.nextProvider} after this request.`,
           );
-          return undefined;
         }
 
         api.logger.debug(
@@ -260,10 +273,12 @@ function registerChainMode(api: OpenClawPluginApi) {
             `$${decision.providerRemaining.toFixed(2)} remaining (${decision.providerPercent}%)`,
         );
 
-        return undefined;
+        // Inject provider-appropriate optimization rules
+        return { prependContext: optimizationRules };
       } catch (err) {
         api.logger.error("[budget-manager] Failed to check chain budget:", err);
-        return undefined;
+        // On error, use general rules (safer)
+        return { prependContext: getOptimizationRules("unknown") };
       }
     },
     { priority: 100 },

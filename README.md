@@ -160,7 +160,7 @@ Add all providers to `~/.openclaw/openclaw.json`:
       },
       "google": {
         "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "apiKey": "${GOOGLE_API_KEY}",
+        "apiKey": "${GEMINI_API_KEY}",
         "api": "openai-completions",
         "models": [
           {
@@ -244,6 +244,69 @@ When fallback to Ollama occurs (either mode), the plugin inspects the prompt and
 | General | `qwen3:8b` | Everything else |
 
 Priority order: **vision > coding > general**.
+
+---
+
+## Cost Optimization (Chain Mode)
+
+Chain mode automatically applies cost optimizations from the [OpenClaw Token Optimization Guide](https://scaleup.media). The optimizations are **provider-aware**:
+
+- **When on Anthropic**: Applies Haiku default + Haiku/Sonnet routing rules
+- **When on other providers**: Uses that provider's default model + general optimization rules
+
+### Config Changes (Anthropic Only)
+
+When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.json`:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| Default model | `claude-3-5-haiku` | Cheap for routine tasks |
+| Model aliases | `sonnet`, `haiku`, `opus` | Easy switching in prompts |
+| Heartbeat model | `ollama/qwen3:8b` | Free local health checks |
+| Prompt caching | Enabled for Sonnet | 90% discount on reused content |
+
+### Prompt Rules Injected
+
+**When on Anthropic:**
+
+- **SESSION INITIALIZATION**: Load only essential context
+- **MODEL SELECTION** (tiered):
+  - **Haiku** (default): Routine tasks, simple queries
+  - **Sonnet**: Code implementation, bug fixing, code review, multi-step analysis
+  - **Opus**: Architecture decisions, security audits, complex refactoring, deep reasoning
+- **RATE LIMITS**: 5s between API calls, 10s between searches
+
+**When on fallback providers (Moonshot, DeepSeek, etc.):**
+
+- **SESSION INITIALIZATION**: Load only essential context
+- **RATE LIMITS**: Same as above
+- **BUDGET AWARENESS**: Notes that Anthropic budget was exhausted
+- (No Haiku/Sonnet rules since those are Anthropic-specific)
+
+### Expected Savings
+
+| Before | After |
+|--------|-------|
+| Sonnet for everything | Haiku by default |
+| Paid API heartbeats | Free Ollama heartbeats |
+| No caching | 90% cache discount |
+| $70-90/month | $3-10/month |
+
+### Provider Fallback Flow
+
+```
+Anthropic (Haiku default) → budget exhausted
+    ↓
+Moonshot (kimi-k2.5) → budget exhausted
+    ↓
+DeepSeek (deepseek-chat) → budget exhausted
+    ↓
+...
+    ↓
+Ollama (qwen3:8b, free)
+```
+
+Each provider uses its own configured default model. Haiku optimization only applies to Anthropic.
 
 ### Overriding local models
 

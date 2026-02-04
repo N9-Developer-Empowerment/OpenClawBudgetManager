@@ -252,6 +252,173 @@ export async function switchToProvider(
   return true;
 }
 
+// Cost optimization: Apply recommended config from the guide
+export interface OptimizationConfig {
+  defaultModel: string;
+  heartbeatModel: string;
+  heartbeatInterval: string;
+  enableCaching: boolean;
+}
+
+const DEFAULT_OPTIMIZATION: OptimizationConfig = {
+  defaultModel: "anthropic/claude-3-5-haiku-20241022",
+  heartbeatModel: "ollama/qwen3:8b",
+  heartbeatInterval: "1h",
+  enableCaching: true,
+};
+
+export function applyOptimizedConfig(
+  logger: Logger,
+  options: Partial<OptimizationConfig> = {},
+): boolean {
+  const opts = { ...DEFAULT_OPTIMIZATION, ...options };
+
+  try {
+    const config = readOpenClawConfig();
+
+    // Ensure structure exists
+    if (!config.agents) config.agents = {};
+    if (!config.agents.defaults) config.agents.defaults = {};
+    if (!config.agents.defaults.model) config.agents.defaults.model = {};
+    if (!config.agents.defaults.models) config.agents.defaults.models = {};
+
+    // Set Haiku as default (cheapest for routine tasks)
+    config.agents.defaults.model.primary = opts.defaultModel;
+
+    // Add model aliases for easy switching in prompts
+    config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"] = { alias: "sonnet" };
+    config.agents.defaults.models["anthropic/claude-3-5-haiku-20241022"] = { alias: "haiku" };
+    config.agents.defaults.models["anthropic/claude-opus-4-20250514"] = { alias: "opus" };
+
+    // Configure heartbeat to use local Ollama (free)
+    const heartbeat = (config as Record<string, unknown>).heartbeat as Record<string, unknown> | undefined;
+    if (!heartbeat) {
+      (config as Record<string, unknown>).heartbeat = {};
+    }
+    const hb = (config as Record<string, unknown>).heartbeat as Record<string, unknown>;
+    hb.every = opts.heartbeatInterval;
+    hb.model = opts.heartbeatModel;
+
+    // Enable prompt caching for Sonnet
+    if (opts.enableCaching) {
+      if (!config.agents.defaults.cache) {
+        (config.agents.defaults as Record<string, unknown>).cache = {};
+      }
+      const cache = (config.agents.defaults as Record<string, unknown>).cache as Record<string, unknown>;
+      cache.enabled = true;
+      cache.ttl = "5m";
+
+      // Enable caching for Sonnet specifically
+      const sonnetConfig = config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"] as Record<string, unknown>;
+      if (sonnetConfig) {
+        sonnetConfig.cache = true;
+      }
+    }
+
+    writeOpenClawConfig(config);
+    logger.info("[model-switcher] Applied optimized config: Haiku default, Ollama heartbeat, caching enabled");
+    return true;
+  } catch (err) {
+    logger.error("[model-switcher] Failed to apply optimized config:", err);
+    return false;
+  }
+}
+
+// Check if optimization has been applied
+export function isOptimizationApplied(): boolean {
+  try {
+    const config = readOpenClawConfig();
+    const primary = config.agents?.defaults?.model?.primary;
+    const heartbeat = (config as Record<string, unknown>).heartbeat as Record<string, unknown> | undefined;
+
+    // Check if Haiku is default and heartbeat uses Ollama
+    const haikuDefault = primary?.includes("haiku");
+    const ollamaHeartbeat = heartbeat?.model?.toString().includes("ollama");
+
+    return Boolean(haikuDefault && ollamaHeartbeat);
+  } catch {
+    return false;
+  }
+}
+
+// Cost optimization prompt rules for Anthropic (Haiku/Sonnet/Opus)
+export const ANTHROPIC_OPTIMIZATION_RULES = `
+[COST OPTIMIZATION RULES - Budget Manager Plugin]
+
+SESSION INITIALIZATION RULE:
+- Load ONLY essential context files on session start
+- DO NOT auto-load: MEMORY.md, full session history, prior tool outputs
+- Use memory_search() on demand when user asks about prior context
+- Keep context lean to minimize token usage
+
+MODEL SELECTION RULE (Anthropic):
+Default: Always use Haiku (say "use haiku" or it's already default)
+
+Switch to Sonnet when:
+- Code implementation and changes
+- Bug fixing and debugging
+- Code review (non-security)
+- Multi-step analysis
+- Documentation writing
+
+Switch to Opus (say "use opus") for complex tasks:
+- Architecture and system design decisions
+- Security analysis and audits
+- Complex multi-file refactoring
+- Strategic planning and trade-off analysis
+- Novel problem-solving requiring deep reasoning
+- When Sonnet struggles or gives poor results
+
+When in doubt: Try Haiku first, escalate to Sonnet, then Opus if needed.
+
+RATE LIMITS:
+- 5 seconds minimum between API calls
+- 10 seconds between web searches
+- Max 5 searches per batch, then 2-minute break
+- Batch similar work (one request for multiple items, not separate requests)
+- If you hit 429 error: STOP, wait 5 minutes, retry
+
+BUDGET AWARENESS:
+- This session has budget limits enforced by the Budget Manager plugin
+- Prefer cheaper operations when possible
+- Batch work to reduce API calls
+`.trim();
+
+// Cost optimization prompt rules for non-Anthropic providers
+export const GENERAL_OPTIMIZATION_RULES = `
+[COST OPTIMIZATION RULES - Budget Manager Plugin]
+
+SESSION INITIALIZATION RULE:
+- Load ONLY essential context files on session start
+- DO NOT auto-load: MEMORY.md, full session history, prior tool outputs
+- Use memory_search() on demand when user asks about prior context
+- Keep context lean to minimize token usage
+
+RATE LIMITS:
+- 5 seconds minimum between API calls
+- 10 seconds between web searches
+- Max 5 searches per batch, then 2-minute break
+- Batch similar work (one request for multiple items, not separate requests)
+- If you hit 429 error: STOP, wait 5 minutes, retry
+
+BUDGET AWARENESS:
+- This session has budget limits enforced by the Budget Manager plugin
+- Anthropic budget was exhausted, now using fallback provider
+- Prefer cheaper operations when possible
+- Batch work to reduce API calls
+`.trim();
+
+// Get appropriate optimization rules based on current provider
+export function getOptimizationRules(providerId: string): string {
+  if (providerId === "anthropic") {
+    return ANTHROPIC_OPTIMIZATION_RULES;
+  }
+  return GENERAL_OPTIMIZATION_RULES;
+}
+
+// Legacy export for backwards compatibility
+export const OPTIMIZATION_PROMPT_RULES = ANTHROPIC_OPTIMIZATION_RULES;
+
 export async function restoreFirstProvider(
   chainConfigPath: string,
   chainBudgetPath: string,

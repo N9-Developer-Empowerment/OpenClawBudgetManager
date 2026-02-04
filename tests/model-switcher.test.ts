@@ -23,6 +23,11 @@ import {
   restoreCloudModel,
   switchToProvider,
   restoreFirstProvider,
+  applyOptimizedConfig,
+  isOptimizationApplied,
+  getOptimizationRules,
+  ANTHROPIC_OPTIMIZATION_RULES,
+  GENERAL_OPTIMIZATION_RULES,
   type SwitcherState,
 } from "../src/model-switcher.js";
 import { loadChainBudget } from "../src/chain-budget-store.js";
@@ -470,6 +475,163 @@ describe("Model Switcher", () => {
 
       const newBudgetData = JSON.parse(fs.readFileSync(TEST_CHAIN_BUDGET_FILE, "utf-8"));
       expect(newBudgetData.activeProvider).toBe("anthropic");
+    });
+  });
+
+  describe("applyOptimizedConfig", () => {
+    it("should set Haiku as default model", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+
+      const result = applyOptimizedConfig(mockLogger);
+
+      expect(result).toBe(true);
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("anthropic/claude-3-5-haiku-20241022");
+    });
+
+    it("should add model aliases for sonnet and haiku", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+
+      applyOptimizedConfig(mockLogger);
+
+      const config = readTestConfig();
+      // Sonnet gets cache: true enabled for cost savings
+      expect(config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"]).toEqual({ alias: "sonnet", cache: true });
+      expect(config.agents.defaults.models["anthropic/claude-3-5-haiku-20241022"]).toEqual({ alias: "haiku" });
+    });
+
+    it("should configure heartbeat to use Ollama", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+
+      applyOptimizedConfig(mockLogger);
+
+      const config = readTestConfig() as Record<string, unknown>;
+      expect(config.heartbeat).toBeDefined();
+      const heartbeat = config.heartbeat as Record<string, unknown>;
+      expect(heartbeat.model).toBe("ollama/qwen3:8b");
+      expect(heartbeat.every).toBe("1h");
+    });
+
+    it("should enable caching", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+
+      applyOptimizedConfig(mockLogger);
+
+      const config = readTestConfig() as Record<string, unknown>;
+      const agents = config.agents as Record<string, unknown>;
+      const defaults = agents.defaults as Record<string, unknown>;
+      const cache = defaults.cache as Record<string, unknown>;
+      expect(cache.enabled).toBe(true);
+      expect(cache.ttl).toBe("5m");
+    });
+
+    it("should accept custom options", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+
+      applyOptimizedConfig(mockLogger, {
+        defaultModel: "anthropic/claude-sonnet-4-20250514",
+        heartbeatInterval: "30m",
+      });
+
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4-20250514");
+      const heartbeat = (config as Record<string, unknown>).heartbeat as Record<string, unknown>;
+      expect(heartbeat.every).toBe("30m");
+    });
+  });
+
+  describe("isOptimizationApplied", () => {
+    it("should return true when Haiku is default and Ollama heartbeat configured", () => {
+      writeTestConfig("anthropic/claude-3-5-haiku-20241022");
+      const config = readTestConfig() as Record<string, unknown>;
+      config.heartbeat = { model: "ollama/qwen3:8b", every: "1h" };
+      fs.writeFileSync(TEST_CONFIG_FILE, JSON.stringify(config, null, 2));
+
+      expect(isOptimizationApplied()).toBe(true);
+    });
+
+    it("should return false when using Sonnet as default", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+
+      expect(isOptimizationApplied()).toBe(false);
+    });
+
+    it("should return false when heartbeat not using Ollama", () => {
+      writeTestConfig("anthropic/claude-3-5-haiku-20241022");
+      const config = readTestConfig() as Record<string, unknown>;
+      config.heartbeat = { model: "anthropic/claude-haiku", every: "1h" };
+      fs.writeFileSync(TEST_CONFIG_FILE, JSON.stringify(config, null, 2));
+
+      expect(isOptimizationApplied()).toBe(false);
+    });
+  });
+
+  describe("getOptimizationRules", () => {
+    it("should return Anthropic rules when provider is anthropic", () => {
+      const rules = getOptimizationRules("anthropic");
+
+      expect(rules).toBe(ANTHROPIC_OPTIMIZATION_RULES);
+      expect(rules).toContain("MODEL SELECTION RULE (Anthropic)");
+      expect(rules).toContain("Default: Always use Haiku");
+      expect(rules).toContain("Switch to Sonnet when");
+      expect(rules).toContain("Switch to Opus");
+    });
+
+    it("should return general rules for non-Anthropic providers", () => {
+      expect(getOptimizationRules("moonshot")).toBe(GENERAL_OPTIMIZATION_RULES);
+      expect(getOptimizationRules("deepseek")).toBe(GENERAL_OPTIMIZATION_RULES);
+      expect(getOptimizationRules("openai")).toBe(GENERAL_OPTIMIZATION_RULES);
+      expect(getOptimizationRules("ollama")).toBe(GENERAL_OPTIMIZATION_RULES);
+    });
+
+    it("should return general rules for unknown providers", () => {
+      expect(getOptimizationRules("unknown")).toBe(GENERAL_OPTIMIZATION_RULES);
+    });
+  });
+
+  describe("ANTHROPIC_OPTIMIZATION_RULES", () => {
+    it("should contain session initialization rules", () => {
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("SESSION INITIALIZATION RULE");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Load ONLY essential context");
+    });
+
+    it("should contain tiered model selection rules (Haiku/Sonnet/Opus)", () => {
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("MODEL SELECTION RULE");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Default: Always use Haiku");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch to Sonnet when");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch to Opus");
+    });
+
+    it("should recommend Opus for complex tasks", () => {
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Architecture and system design");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Security analysis");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("deep reasoning");
+    });
+
+    it("should contain rate limits", () => {
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("RATE LIMITS");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("5 seconds minimum");
+    });
+  });
+
+  describe("GENERAL_OPTIMIZATION_RULES", () => {
+    it("should contain session initialization rules", () => {
+      expect(GENERAL_OPTIMIZATION_RULES).toContain("SESSION INITIALIZATION RULE");
+    });
+
+    it("should NOT contain Haiku/Sonnet model selection rules", () => {
+      expect(GENERAL_OPTIMIZATION_RULES).not.toContain("use Haiku");
+      expect(GENERAL_OPTIMIZATION_RULES).not.toContain("Switch to Sonnet");
+    });
+
+    it("should mention fallback provider status", () => {
+      expect(GENERAL_OPTIMIZATION_RULES).toContain("Anthropic budget was exhausted");
+      expect(GENERAL_OPTIMIZATION_RULES).toContain("fallback provider");
+    });
+
+    it("should contain rate limits", () => {
+      expect(GENERAL_OPTIMIZATION_RULES).toContain("RATE LIMITS");
+      expect(GENERAL_OPTIMIZATION_RULES).toContain("5 seconds minimum");
     });
   });
 });
