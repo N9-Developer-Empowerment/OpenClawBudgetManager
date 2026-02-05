@@ -480,14 +480,14 @@ describe("Model Switcher", () => {
   });
 
   describe("applyOptimizedConfig", () => {
-    it("should set Haiku as default model", () => {
-      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+    it("should set Sonnet as default model", () => {
+      writeTestConfig("anthropic/claude-3-5-haiku-20241022");
 
       const result = applyOptimizedConfig(mockLogger);
 
       expect(result).toBe(true);
       const config = readTestConfig();
-      expect(config.agents.defaults.model.primary).toBe("anthropic/claude-3-5-haiku-20241022");
+      expect(config.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4-20250514");
     });
 
     it("should add model aliases for sonnet, haiku, and opus", () => {
@@ -514,20 +514,16 @@ describe("Model Switcher", () => {
   });
 
   describe("isOptimizationApplied", () => {
-    it("should return true when Haiku is default", () => {
-      writeTestConfig("anthropic/claude-3-5-haiku-20241022");
+    it("should return true when model aliases are configured", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+      // Apply optimization to set up aliases
+      applyOptimizedConfig(mockLogger);
 
       expect(isOptimizationApplied()).toBe(true);
     });
 
-    it("should return false when using Sonnet as default", () => {
+    it("should return false when aliases are not set up", () => {
       writeTestConfig("anthropic/claude-sonnet-4-20250514");
-
-      expect(isOptimizationApplied()).toBe(false);
-    });
-
-    it("should return false when using non-Anthropic model as default", () => {
-      writeTestConfig("moonshot/kimi-k2.5");
 
       expect(isOptimizationApplied()).toBe(false);
     });
@@ -539,9 +535,9 @@ describe("Model Switcher", () => {
 
       expect(rules).toBe(ANTHROPIC_OPTIMIZATION_RULES);
       expect(rules).toContain("MODEL SELECTION RULE (Anthropic)");
-      expect(rules).toContain("Default: Always use Haiku");
-      expect(rules).toContain("Switch to Sonnet when");
-      expect(rules).toContain("Switch to Opus");
+      expect(rules).toContain("Default: Use Sonnet");
+      expect(rules).toContain("Switch DOWN to Haiku");
+      expect(rules).toContain("Switch UP to Opus");
     });
 
     it("should return general rules for non-Anthropic providers", () => {
@@ -562,17 +558,17 @@ describe("Model Switcher", () => {
       expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Load ONLY essential context");
     });
 
-    it("should contain tiered model selection rules (Haiku/Sonnet/Opus)", () => {
+    it("should contain tiered model selection rules (Sonnet default, Haiku down, Opus up)", () => {
       expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("MODEL SELECTION RULE");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Default: Always use Haiku");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch to Sonnet when");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch to Opus");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Default: Use Sonnet");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch DOWN to Haiku");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch UP to Opus");
     });
 
-    it("should recommend Opus for complex tasks", () => {
+    it("should recommend Opus for complex tasks and when tasks fail", () => {
       expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Architecture and system design");
       expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Security analysis");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("deep reasoning");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("failed twice");
     });
 
     it("should contain rate limits", () => {

@@ -99,6 +99,28 @@ describe("Usage Tracker", () => {
       expect(result!.cost).toBe(0.013976);
     });
 
+    it("should fall back to token-based cost when pre-calculated cost is zero for a non-free model", () => {
+      const cost: ModelCost = { input: 0.00028, output: 0.00042 };
+      const messages = [
+        {
+          role: "assistant",
+          content: "response",
+          model: "deepseek-chat",
+          provider: "deepseek",
+          usage: { input_tokens: 34746, output_tokens: 886, cost: { total: 0 } },
+        },
+      ];
+
+      const result = aggregateUsageFromMessages(messages, "deepseek/deepseek-chat", cost);
+
+      expect(result).not.toBeNull();
+      expect(result!.input_tokens).toBe(34746);
+      expect(result!.output_tokens).toBe(886);
+      // (34746/1000)*0.00028 + (886/1000)*0.00042 ≈ 0.0101
+      expect(result!.cost).toBeGreaterThan(0);
+      expect(result!.cost).toBeCloseTo(0.0101, 3);
+    });
+
     it("should fall back to token-based cost calculation when no pre-calculated cost", () => {
       const cost: ModelCost = { input: 0.003, output: 0.015 };
       const messages = [

@@ -118,7 +118,7 @@ export function aggregateUsageFromMessages(
       // cost += 0
     } else {
       const preCost = extractPreCalculatedCost(usage);
-      if (preCost !== null) {
+      if (preCost !== null && preCost > 0) {
         totalCost += preCost;
       } else {
         totalCost += calculateCost(tokens.input_tokens, tokens.output_tokens, fallbackCost);

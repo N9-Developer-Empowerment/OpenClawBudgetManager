@@ -258,7 +258,7 @@ export interface OptimizationConfig {
 }
 
 const DEFAULT_OPTIMIZATION: OptimizationConfig = {
-  defaultModel: "anthropic/claude-3-5-haiku-20241022",
+  defaultModel: "anthropic/claude-sonnet-4-20250514",
 };
 
 export function applyOptimizedConfig(
@@ -293,12 +293,15 @@ export function applyOptimizedConfig(
   }
 }
 
-// Check if optimization has been applied (Haiku is default)
+// Check if optimization has been applied (model aliases present)
 export function isOptimizationApplied(): boolean {
   try {
     const config = readOpenClawConfig();
-    const primary = config.agents?.defaults?.model?.primary;
-    return Boolean(primary?.includes("haiku"));
+    const models = config.agents?.defaults?.models ?? {};
+    // Check if aliases have been set up
+    const hasSonnetAlias = models["anthropic/claude-sonnet-4-20250514"] as Record<string, unknown> | undefined;
+    const hasHaikuAlias = models["anthropic/claude-3-5-haiku-20241022"] as Record<string, unknown> | undefined;
+    return Boolean(hasSonnetAlias?.alias && hasHaikuAlias?.alias);
   } catch {
     return false;
   }
@@ -315,24 +318,21 @@ SESSION INITIALIZATION RULE:
 - Keep context lean to minimize token usage
 
 MODEL SELECTION RULE (Anthropic):
-Default: Always use Haiku (say "use haiku" or it's already default)
+Default: Use Sonnet (the current default model)
 
-Switch to Sonnet when:
-- Code implementation and changes
-- Bug fixing and debugging
-- Code review (non-security)
-- Multi-step analysis
-- Documentation writing
+Switch DOWN to Haiku (say "use haiku") for simple tasks:
+- Status checks and short Q&A
+- Simple formatting or text generation
+- Routine monitoring and health checks
+- Tasks that need speed over reasoning depth
 
-Switch to Opus (say "use opus") for complex tasks:
+Switch UP to Opus (say "use opus") for complex tasks:
 - Architecture and system design decisions
 - Security analysis and audits
 - Complex multi-file refactoring
 - Strategic planning and trade-off analysis
 - Novel problem-solving requiring deep reasoning
-- When Sonnet struggles or gives poor results
-
-When in doubt: Try Haiku first, escalate to Sonnet, then Opus if needed.
+- When a task has failed twice and needs stronger reasoning
 
 RATE LIMITS:
 - 5 seconds minimum between API calls

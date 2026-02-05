@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { trackUsage, trackChainUsage, isLocalModel, type ModelCost } from "./usage-tracker.js";
 import { checkBudget, checkChainBudget, getLocalModels } from "./budget-gate.js";
@@ -11,9 +12,11 @@ import {
   applyOptimizedConfig,
   isOptimizationApplied,
   getOptimizationRules,
+  restartGateway,
 } from "./model-switcher.js";
 import { loadChainConfig, applyEnvOverrides } from "./provider-chain.js";
 import { loadChainBudget, getActiveProvider } from "./chain-budget-store.js";
+import { truncateActiveSession } from "./context-manager.js";
 
 // Load .env file from plugin directory if it exists
 const ENV_FILE = path.join(import.meta.dirname, "..", ".env");
@@ -47,6 +50,38 @@ const USE_CHAIN_MODE = process.env.USE_CHAIN_MODE?.toLowerCase() === "true";
 
 // Disable prompt optimization injection (for troubleshooting)
 const DISABLE_PROMPT_OPTIMIZATION = process.env.DISABLE_PROMPT_OPTIMIZATION?.toLowerCase() === "true";
+
+// Context truncation settings
+const CONTEXT_TRUNCATION_ENABLED = process.env.CONTEXT_TRUNCATION_ENABLED?.toLowerCase() !== "false";
+const CONTEXT_MAX_TOKENS = parseInt(process.env.CONTEXT_MAX_TOKENS ?? "120000", 10);
+const CONTEXT_KEEP_RECENT = parseInt(process.env.CONTEXT_KEEP_RECENT ?? "20", 10);
+const SESSION_KEY = process.env.SESSION_KEY ?? "agent:main:main";
+const OPENCLAW_SESSIONS_DIR = path.join(os.homedir(), ".openclaw", "agents", "main", "sessions");
+const OPENCLAW_SESSIONS_INDEX = path.join(os.homedir(), ".openclaw", "agents", "main", "sessions.json");
+
+// Skip prompt injection when context is already near the model's context window limit.
+// 150K tokens leaves ~50K for output + safety margin on a 200K context model.
+const CONTEXT_INJECTION_THRESHOLD = 150_000;
+
+// Rough token estimate: ~4 chars per token (conservative for English text)
+function estimateContextTokens(prompt: string, messages: unknown[]): number {
+  let chars = prompt.length;
+  for (const msg of messages) {
+    if (msg && typeof msg === "object") {
+      const content = (msg as Record<string, unknown>).content;
+      if (typeof content === "string") {
+        chars += content.length;
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block && typeof block === "object" && typeof (block as Record<string, unknown>).text === "string") {
+            chars += ((block as Record<string, unknown>).text as string).length;
+          }
+        }
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
+}
 
 const DEFAULT_COSTS: Record<string, ModelCost> = {
   // Anthropic (bare and provider-prefixed variants)
@@ -208,6 +243,31 @@ function registerLegacyMode(api: OpenClawPluginApi) {
             api.logger.error("[budget-manager] Failed to switch to local model:", err);
           });
       }
+
+      // Context truncation: trim session file when context grows too large
+      if (CONTEXT_TRUNCATION_ENABLED) {
+        const estimatedTokens = estimateContextTokens("", messages);
+        if (estimatedTokens > CONTEXT_MAX_TOKENS) {
+          try {
+            const result = truncateActiveSession({
+              maxContextTokens: CONTEXT_MAX_TOKENS,
+              keepRecentMessages: CONTEXT_KEEP_RECENT,
+              sessionsDir: OPENCLAW_SESSIONS_DIR,
+              sessionsIndexPath: OPENCLAW_SESSIONS_INDEX,
+              sessionKey: SESSION_KEY,
+            });
+            if (result.truncated) {
+              api.logger.info(
+                `[budget-manager] Session truncated: ${result.entriesBefore} -> ${result.entriesAfter} entries ` +
+                  `(~${result.estimatedTokensBefore} -> ~${result.estimatedTokensAfter} tokens)`,
+              );
+              restartGateway();
+            }
+          } catch (err) {
+            api.logger.error("[budget-manager] Failed to truncate session:", err);
+          }
+        }
+      }
     } catch (err) {
       api.logger.error("[budget-manager] Failed to track usage:", err);
     }
@@ -269,10 +329,18 @@ function registerChainMode(api: OpenClawPluginApi) {
           );
         }
 
-        // Inject provider-appropriate optimization rules (unless disabled)
+        // Inject provider-appropriate optimization rules (unless disabled).
+        // Skip injection when context is already large to avoid hitting context window limits.
         if (!DISABLE_PROMPT_OPTIMIZATION) {
-          const optimizationRules = getOptimizationRules(decision.currentProvider);
-          return { prependContext: optimizationRules };
+          const estimatedTokens = estimateContextTokens(prompt, messages);
+          if (estimatedTokens > CONTEXT_INJECTION_THRESHOLD) {
+            api.logger.warn(
+              `[budget-manager] Context too large (~${estimatedTokens} tokens), skipping prompt injection`,
+            );
+          } else {
+            const optimizationRules = getOptimizationRules(decision.currentProvider);
+            return { prependContext: optimizationRules };
+          }
         }
 
         return undefined;
@@ -332,6 +400,31 @@ function registerChainMode(api: OpenClawPluginApi) {
           });
       } else if (decision.action === "all_exhausted") {
         api.logger.warn("[budget-manager] All providers exhausted, no fallback available");
+      }
+
+      // Context truncation: trim session file when context grows too large
+      if (CONTEXT_TRUNCATION_ENABLED) {
+        const estimatedTokens = estimateContextTokens("", messages);
+        if (estimatedTokens > CONTEXT_MAX_TOKENS) {
+          try {
+            const truncResult = truncateActiveSession({
+              maxContextTokens: CONTEXT_MAX_TOKENS,
+              keepRecentMessages: CONTEXT_KEEP_RECENT,
+              sessionsDir: OPENCLAW_SESSIONS_DIR,
+              sessionsIndexPath: OPENCLAW_SESSIONS_INDEX,
+              sessionKey: SESSION_KEY,
+            });
+            if (truncResult.truncated) {
+              api.logger.info(
+                `[budget-manager] Session truncated: ${truncResult.entriesBefore} -> ${truncResult.entriesAfter} entries ` +
+                  `(~${truncResult.estimatedTokensBefore} -> ~${truncResult.estimatedTokensAfter} tokens)`,
+              );
+              restartGateway();
+            }
+          } catch (err) {
+            api.logger.error("[budget-manager] Failed to truncate session:", err);
+          }
+        }
       }
     } catch (err) {
       api.logger.error("[budget-manager] Failed to track chain usage:", err);
