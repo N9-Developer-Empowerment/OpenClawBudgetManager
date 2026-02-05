@@ -293,9 +293,9 @@ function registerChainMode(api: OpenClawPluginApi) {
       const activeProvider = getActiveProvider(budgetData);
       api.logger.info(`[budget-manager] Active provider: ${activeProvider}`);
 
-      // Only apply Anthropic optimization (Haiku default, model aliases) when on Anthropic
+      // Only apply Anthropic optimization (Sonnet default, model aliases) when on Anthropic
       if (activeProvider === "anthropic" && !isOptimizationApplied()) {
-        api.logger.info("[budget-manager] Applying Anthropic optimization (Haiku default, model aliases)");
+        api.logger.info("[budget-manager] Applying Anthropic optimization (Sonnet default, model aliases)");
         applyOptimizedConfig(api.logger);
       }
     }

@@ -251,7 +251,7 @@ Priority order: **vision > coding > general**.
 
 Chain mode automatically applies cost optimizations from the [OpenClaw Token Optimization Guide](https://scaleup.media). The optimizations are **provider-aware**:
 
-- **When on Anthropic**: Applies Haiku default + Haiku/Sonnet routing rules
+- **When on Anthropic**: Applies Sonnet default + Haiku/Sonnet/Opus routing rules
 - **When on other providers**: Uses that provider's default model + general optimization rules
 
 ### Config Changes (Anthropic Only)
@@ -260,7 +260,7 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| Default model | `claude-3-5-haiku` | Cheap for routine tasks |
+| Default model | `claude-sonnet-4` | Best balance of quality and cost |
 | Model aliases | `sonnet`, `haiku`, `opus` | Easy switching in prompts |
 
 ### Prompt Rules Injected
@@ -269,9 +269,9 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 
 - **SESSION INITIALIZATION**: Load only essential context
 - **MODEL SELECTION** (tiered):
-  - **Haiku** (default): Routine tasks, simple queries
-  - **Sonnet**: Code implementation, bug fixing, code review, multi-step analysis
-  - **Opus**: Architecture decisions, security audits, complex refactoring, deep reasoning
+  - **Sonnet** (default): Code implementation, bug fixing, code review, multi-step analysis
+  - **Haiku** (switch down): Routine tasks, simple queries, status checks
+  - **Opus** (switch up): Architecture decisions, security audits, complex refactoring, deep reasoning
 - **RATE LIMITS**: 5s between API calls, 10s between searches
 
 **When on fallback providers (Moonshot, DeepSeek, etc.):**
@@ -285,14 +285,14 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 
 | Before | After |
 |--------|-------|
-| Sonnet for everything | Haiku by default |
-| No model escalation | Sonnet/Opus for complex tasks |
+| Opus for everything | Sonnet by default |
+| No model routing | Haiku for simple / Opus for complex tasks |
 | $70-90/month | $3-10/month |
 
 ### Provider Fallback Flow
 
 ```
-Anthropic (Haiku default) → budget exhausted
+Anthropic (Sonnet default) → budget exhausted
     ↓
 Moonshot (kimi-k2.5) → budget exhausted
     ↓
@@ -303,7 +303,7 @@ DeepSeek (deepseek-chat) → budget exhausted
 Ollama (qwen3:8b, free)
 ```
 
-Each provider uses its own configured default model. Haiku optimization only applies to Anthropic.
+Each provider uses its own configured default model. The Sonnet/Haiku/Opus routing rules only apply to Anthropic.
 
 ### Overriding local models
 

@@ -276,7 +276,7 @@ export function applyOptimizedConfig(
     if (!config.agents.defaults.model) config.agents.defaults.model = {};
     if (!config.agents.defaults.models) config.agents.defaults.models = {};
 
-    // Set Haiku as default (cheapest for routine tasks)
+    // Set Sonnet as default (best balance of quality and cost)
     config.agents.defaults.model.primary = opts.defaultModel;
 
     // Add model aliases for easy switching in prompts
@@ -285,7 +285,7 @@ export function applyOptimizedConfig(
     config.agents.defaults.models["anthropic/claude-opus-4-20250514"] = { alias: "opus" };
 
     writeOpenClawConfig(config);
-    logger.info("[model-switcher] Applied optimized config: Haiku default, model aliases added");
+    logger.info("[model-switcher] Applied optimized config: Sonnet default, model aliases added");
     return true;
   } catch (err) {
     logger.error("[model-switcher] Failed to apply optimized config:", err);
