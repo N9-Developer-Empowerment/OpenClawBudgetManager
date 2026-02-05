@@ -30,6 +30,7 @@ import {
   GENERAL_OPTIMIZATION_RULES,
   type SwitcherState,
 } from "../src/model-switcher.js";
+
 import { loadChainBudget } from "../src/chain-budget-store.js";
 import type { ChainConfig } from "../src/provider-chain.js";
 
@@ -489,63 +490,32 @@ describe("Model Switcher", () => {
       expect(config.agents.defaults.model.primary).toBe("anthropic/claude-3-5-haiku-20241022");
     });
 
-    it("should add model aliases for sonnet and haiku", () => {
+    it("should add model aliases for sonnet, haiku, and opus", () => {
       writeTestConfig("anthropic/claude-sonnet-4-20250514");
 
       applyOptimizedConfig(mockLogger);
 
       const config = readTestConfig();
-      // Sonnet gets cache: true enabled for cost savings
-      expect(config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"]).toEqual({ alias: "sonnet", cache: true });
+      expect(config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"]).toEqual({ alias: "sonnet" });
       expect(config.agents.defaults.models["anthropic/claude-3-5-haiku-20241022"]).toEqual({ alias: "haiku" });
+      expect(config.agents.defaults.models["anthropic/claude-opus-4-20250514"]).toEqual({ alias: "opus" });
     });
 
-    it("should configure heartbeat to use Ollama", () => {
-      writeTestConfig("anthropic/claude-sonnet-4-20250514");
-
-      applyOptimizedConfig(mockLogger);
-
-      const config = readTestConfig() as Record<string, unknown>;
-      expect(config.heartbeat).toBeDefined();
-      const heartbeat = config.heartbeat as Record<string, unknown>;
-      expect(heartbeat.model).toBe("ollama/qwen3:8b");
-      expect(heartbeat.every).toBe("1h");
-    });
-
-    it("should enable caching", () => {
-      writeTestConfig("anthropic/claude-sonnet-4-20250514");
-
-      applyOptimizedConfig(mockLogger);
-
-      const config = readTestConfig() as Record<string, unknown>;
-      const agents = config.agents as Record<string, unknown>;
-      const defaults = agents.defaults as Record<string, unknown>;
-      const cache = defaults.cache as Record<string, unknown>;
-      expect(cache.enabled).toBe(true);
-      expect(cache.ttl).toBe("5m");
-    });
-
-    it("should accept custom options", () => {
+    it("should accept custom default model", () => {
       writeTestConfig("anthropic/claude-sonnet-4-20250514");
 
       applyOptimizedConfig(mockLogger, {
         defaultModel: "anthropic/claude-sonnet-4-20250514",
-        heartbeatInterval: "30m",
       });
 
       const config = readTestConfig();
       expect(config.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4-20250514");
-      const heartbeat = (config as Record<string, unknown>).heartbeat as Record<string, unknown>;
-      expect(heartbeat.every).toBe("30m");
     });
   });
 
   describe("isOptimizationApplied", () => {
-    it("should return true when Haiku is default and Ollama heartbeat configured", () => {
+    it("should return true when Haiku is default", () => {
       writeTestConfig("anthropic/claude-3-5-haiku-20241022");
-      const config = readTestConfig() as Record<string, unknown>;
-      config.heartbeat = { model: "ollama/qwen3:8b", every: "1h" };
-      fs.writeFileSync(TEST_CONFIG_FILE, JSON.stringify(config, null, 2));
 
       expect(isOptimizationApplied()).toBe(true);
     });
@@ -556,11 +526,8 @@ describe("Model Switcher", () => {
       expect(isOptimizationApplied()).toBe(false);
     });
 
-    it("should return false when heartbeat not using Ollama", () => {
-      writeTestConfig("anthropic/claude-3-5-haiku-20241022");
-      const config = readTestConfig() as Record<string, unknown>;
-      config.heartbeat = { model: "anthropic/claude-haiku", every: "1h" };
-      fs.writeFileSync(TEST_CONFIG_FILE, JSON.stringify(config, null, 2));
+    it("should return false when using non-Anthropic model as default", () => {
+      writeTestConfig("moonshot/kimi-k2.5");
 
       expect(isOptimizationApplied()).toBe(false);
     });

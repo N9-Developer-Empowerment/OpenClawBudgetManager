@@ -255,16 +255,10 @@ export async function switchToProvider(
 // Cost optimization: Apply recommended config from the guide
 export interface OptimizationConfig {
   defaultModel: string;
-  heartbeatModel: string;
-  heartbeatInterval: string;
-  enableCaching: boolean;
 }
 
 const DEFAULT_OPTIMIZATION: OptimizationConfig = {
   defaultModel: "anthropic/claude-3-5-haiku-20241022",
-  heartbeatModel: "ollama/qwen3:8b",
-  heartbeatInterval: "1h",
-  enableCaching: true,
 };
 
 export function applyOptimizedConfig(
@@ -290,33 +284,8 @@ export function applyOptimizedConfig(
     config.agents.defaults.models["anthropic/claude-3-5-haiku-20241022"] = { alias: "haiku" };
     config.agents.defaults.models["anthropic/claude-opus-4-20250514"] = { alias: "opus" };
 
-    // Configure heartbeat to use local Ollama (free)
-    const heartbeat = (config as Record<string, unknown>).heartbeat as Record<string, unknown> | undefined;
-    if (!heartbeat) {
-      (config as Record<string, unknown>).heartbeat = {};
-    }
-    const hb = (config as Record<string, unknown>).heartbeat as Record<string, unknown>;
-    hb.every = opts.heartbeatInterval;
-    hb.model = opts.heartbeatModel;
-
-    // Enable prompt caching for Sonnet
-    if (opts.enableCaching) {
-      if (!config.agents.defaults.cache) {
-        (config.agents.defaults as Record<string, unknown>).cache = {};
-      }
-      const cache = (config.agents.defaults as Record<string, unknown>).cache as Record<string, unknown>;
-      cache.enabled = true;
-      cache.ttl = "5m";
-
-      // Enable caching for Sonnet specifically
-      const sonnetConfig = config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"] as Record<string, unknown>;
-      if (sonnetConfig) {
-        sonnetConfig.cache = true;
-      }
-    }
-
     writeOpenClawConfig(config);
-    logger.info("[model-switcher] Applied optimized config: Haiku default, Ollama heartbeat, caching enabled");
+    logger.info("[model-switcher] Applied optimized config: Haiku default, model aliases added");
     return true;
   } catch (err) {
     logger.error("[model-switcher] Failed to apply optimized config:", err);
@@ -324,18 +293,12 @@ export function applyOptimizedConfig(
   }
 }
 
-// Check if optimization has been applied
+// Check if optimization has been applied (Haiku is default)
 export function isOptimizationApplied(): boolean {
   try {
     const config = readOpenClawConfig();
     const primary = config.agents?.defaults?.model?.primary;
-    const heartbeat = (config as Record<string, unknown>).heartbeat as Record<string, unknown> | undefined;
-
-    // Check if Haiku is default and heartbeat uses Ollama
-    const haikuDefault = primary?.includes("haiku");
-    const ollamaHeartbeat = heartbeat?.model?.toString().includes("ollama");
-
-    return Boolean(haikuDefault && ollamaHeartbeat);
+    return Boolean(primary?.includes("haiku"));
   } catch {
     return false;
   }

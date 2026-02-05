@@ -45,6 +45,9 @@ const CHAIN_BUDGET_FILE = path.join(BUDGET_DATA_DIR, "chain-budget.json");
 // Enable chain mode via environment variable
 const USE_CHAIN_MODE = process.env.USE_CHAIN_MODE?.toLowerCase() === "true";
 
+// Disable prompt optimization injection (for troubleshooting)
+const DISABLE_PROMPT_OPTIMIZATION = process.env.DISABLE_PROMPT_OPTIMIZATION?.toLowerCase() === "true";
+
 const DEFAULT_COSTS: Record<string, ModelCost> = {
   // Anthropic (bare and provider-prefixed variants)
   "claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
@@ -230,9 +233,9 @@ function registerChainMode(api: OpenClawPluginApi) {
       const activeProvider = getActiveProvider(budgetData);
       api.logger.info(`[budget-manager] Active provider: ${activeProvider}`);
 
-      // Only apply Anthropic optimization when on Anthropic
+      // Only apply Anthropic optimization (Haiku default, model aliases) when on Anthropic
       if (activeProvider === "anthropic" && !isOptimizationApplied()) {
-        api.logger.info("[budget-manager] Applying Anthropic optimization (Haiku default, Ollama heartbeat, caching)");
+        api.logger.info("[budget-manager] Applying Anthropic optimization (Haiku default, model aliases)");
         applyOptimizedConfig(api.logger);
       }
     }
@@ -250,35 +253,32 @@ function registerChainMode(api: OpenClawPluginApi) {
 
         const decision = checkChainBudget(CHAIN_BUDGET_FILE, CHAIN_CONFIG_FILE, prompt, messages);
 
-        // Get provider-aware optimization rules
-        // Anthropic rules include Haiku/Sonnet guidance; other providers get general rules
-        const optimizationRules = getOptimizationRules(decision.currentProvider);
-
         if (decision.action === "all_exhausted") {
           api.logger.warn(
             `[budget-manager] All providers exhausted! ${decision.reason}`,
           );
-          return { prependContext: optimizationRules };
-        }
-
-        if (decision.action === "switch_provider") {
+        } else if (decision.action === "switch_provider") {
           api.logger.info(
             `[budget-manager] Provider ${decision.currentProvider} exhausted. ` +
               `Will switch to ${decision.nextProvider} after this request.`,
           );
+        } else {
+          api.logger.debug(
+            `[budget-manager] Using ${decision.currentProvider}: ` +
+              `$${decision.providerRemaining.toFixed(2)} remaining (${decision.providerPercent}%)`,
+          );
         }
 
-        api.logger.debug(
-          `[budget-manager] Using ${decision.currentProvider}: ` +
-            `$${decision.providerRemaining.toFixed(2)} remaining (${decision.providerPercent}%)`,
-        );
+        // Inject provider-appropriate optimization rules (unless disabled)
+        if (!DISABLE_PROMPT_OPTIMIZATION) {
+          const optimizationRules = getOptimizationRules(decision.currentProvider);
+          return { prependContext: optimizationRules };
+        }
 
-        // Inject provider-appropriate optimization rules
-        return { prependContext: optimizationRules };
+        return undefined;
       } catch (err) {
         api.logger.error("[budget-manager] Failed to check chain budget:", err);
-        // On error, use general rules (safer)
-        return { prependContext: getOptimizationRules("unknown") };
+        return undefined;
       }
     },
     { priority: 100 },

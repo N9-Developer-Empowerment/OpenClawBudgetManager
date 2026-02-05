@@ -262,8 +262,6 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 |---------|-------|---------|
 | Default model | `claude-3-5-haiku` | Cheap for routine tasks |
 | Model aliases | `sonnet`, `haiku`, `opus` | Easy switching in prompts |
-| Heartbeat model | `ollama/qwen3:8b` | Free local health checks |
-| Prompt caching | Enabled for Sonnet | 90% discount on reused content |
 
 ### Prompt Rules Injected
 
@@ -288,8 +286,7 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 | Before | After |
 |--------|-------|
 | Sonnet for everything | Haiku by default |
-| Paid API heartbeats | Free Ollama heartbeats |
-| No caching | 90% cache discount |
+| No model escalation | Sonnet/Opus for complex tasks |
 | $70-90/month | $3-10/month |
 
 ### Provider Fallback Flow
