@@ -59,14 +59,23 @@ function freshChainBudget(chainConfig: ChainConfig): ChainBudgetData {
   };
 }
 
+export interface LoadChainBudgetResult {
+  data: ChainBudgetData;
+  wasReset: boolean;
+}
+
 export function loadChainBudget(filePath: string, chainConfig: ChainConfig): ChainBudgetData {
+  return loadChainBudgetWithStatus(filePath, chainConfig).data;
+}
+
+export function loadChainBudgetWithStatus(filePath: string, chainConfig: ChainConfig): LoadChainBudgetResult {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
 
   if (!fs.existsSync(filePath)) {
     const budget = freshChainBudget(chainConfig);
     fs.writeFileSync(filePath, JSON.stringify(budget, null, 2));
-    return budget;
+    return { data: budget, wasReset: true };
   }
 
   const raw = JSON.parse(fs.readFileSync(filePath, "utf-8")) as ChainBudgetData;
@@ -74,7 +83,7 @@ export function loadChainBudget(filePath: string, chainConfig: ChainConfig): Cha
   if (raw.date !== todayString()) {
     const budget = freshChainBudget(chainConfig);
     fs.writeFileSync(filePath, JSON.stringify(budget, null, 2));
-    return budget;
+    return { data: budget, wasReset: true };
   }
 
   // Ensure all providers from config exist in spends
@@ -84,7 +93,7 @@ export function loadChainBudget(filePath: string, chainConfig: ChainConfig): Cha
     }
   }
 
-  return raw;
+  return { data: raw, wasReset: false };
 }
 
 export function saveChainBudget(filePath: string, data: ChainBudgetData): void {

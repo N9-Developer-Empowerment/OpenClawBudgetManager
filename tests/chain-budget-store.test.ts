@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ChainConfig } from "../src/provider-chain.js";
 import {
   loadChainBudget,
+  loadChainBudgetWithStatus,
   saveChainBudget,
   recordProviderTransaction,
   getProviderSpend,
@@ -125,6 +126,54 @@ describe("Chain Budget Store", () => {
 
       expect(budget.providers.newprovider).toBeDefined();
       expect(budget.providers.newprovider.spentUsd).toBe(0);
+    });
+  });
+
+  describe("loadChainBudgetWithStatus", () => {
+    it("should return wasReset=true when file does not exist", () => {
+      const config = createTestChainConfig();
+
+      const { data, wasReset } = loadChainBudgetWithStatus(TEST_BUDGET_FILE, config);
+
+      expect(wasReset).toBe(true);
+      expect(data.activeProvider).toBe("anthropic");
+    });
+
+    it("should return wasReset=true on date change", () => {
+      const config = createTestChainConfig();
+      const oldBudget: ChainBudgetData = {
+        date: "2020-01-01",
+        providers: {
+          anthropic: { spentUsd: 2.5, exhausted: true },
+          moonshot: { spentUsd: 1.8, exhausted: false },
+          deepseek: { spentUsd: 0.5, exhausted: false },
+          ollama: { spentUsd: 0, exhausted: false },
+        },
+        transactions: [],
+        activeProvider: "deepseek",
+        switchHistory: [],
+      };
+      fs.writeFileSync(TEST_BUDGET_FILE, JSON.stringify(oldBudget, null, 2));
+
+      const { data, wasReset } = loadChainBudgetWithStatus(TEST_BUDGET_FILE, config);
+
+      expect(wasReset).toBe(true);
+      expect(data.activeProvider).toBe("anthropic");
+      expect(data.providers.anthropic.spentUsd).toBe(0);
+    });
+
+    it("should return wasReset=false when loading same day data", () => {
+      const config = createTestChainConfig();
+      const todayBudget = createTestBudgetData();
+      todayBudget.providers.anthropic.spentUsd = 1.5;
+      todayBudget.activeProvider = "moonshot";
+      fs.writeFileSync(TEST_BUDGET_FILE, JSON.stringify(todayBudget, null, 2));
+
+      const { data, wasReset } = loadChainBudgetWithStatus(TEST_BUDGET_FILE, config);
+
+      expect(wasReset).toBe(false);
+      expect(data.activeProvider).toBe("moonshot");
+      expect(data.providers.anthropic.spentUsd).toBe(1.5);
     });
   });
 

@@ -280,9 +280,24 @@ export function applyOptimizedConfig(
     config.agents.defaults.model.primary = opts.defaultModel;
 
     // Add model aliases for easy switching in prompts
+    // Anthropic models
     config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"] = { alias: "sonnet" };
     config.agents.defaults.models["anthropic/claude-3-5-haiku-20241022"] = { alias: "haiku" };
     config.agents.defaults.models["anthropic/claude-opus-4-20250514"] = { alias: "opus" };
+    config.agents.defaults.models["anthropic/claude-opus-4-5-20251101"] = { alias: "opus45" };
+
+    // Other providers
+    config.agents.defaults.models["deepseek/deepseek-chat"] = { alias: "deepseek" };
+    config.agents.defaults.models["moonshot/kimi-k2.5"] = { alias: "kimi" };
+    config.agents.defaults.models["google/gemini-2.5-flash"] = { alias: "gemini" };
+    config.agents.defaults.models["google/gemini-2.5-pro"] = { alias: "gemini-pro" };
+    config.agents.defaults.models["openai/gpt-4o"] = { alias: "gpt4" };
+    config.agents.defaults.models["openai/gpt-4o-mini"] = { alias: "gpt4-mini" };
+
+    // Local Ollama models
+    config.agents.defaults.models["ollama/qwen3:8b"] = { alias: "local" };
+    config.agents.defaults.models["ollama/qwen3-coder:30b"] = { alias: "local-coder" };
+    config.agents.defaults.models["ollama/qwen3-vl:8b"] = { alias: "local-vision" };
 
     writeOpenClawConfig(config);
     logger.info("[model-switcher] Applied optimized config: Sonnet default, model aliases added");
@@ -317,22 +332,12 @@ SESSION INITIALIZATION RULE:
 - Use memory_search() on demand when user asks about prior context
 - Keep context lean to minimize token usage
 
-MODEL SELECTION RULE (Anthropic):
-Default: Use Sonnet (the current default model)
+MODEL SELECTION (Anthropic):
+Default: Sonnet (balanced quality and cost)
 
-Switch DOWN to Haiku (say "use haiku") for simple tasks:
-- Status checks and short Q&A
-- Simple formatting or text generation
-- Routine monitoring and health checks
-- Tasks that need speed over reasoning depth
-
-Switch UP to Opus (say "use opus") for complex tasks:
-- Architecture and system design decisions
-- Security analysis and audits
-- Complex multi-file refactoring
-- Strategic planning and trade-off analysis
-- Novel problem-solving requiring deep reasoning
-- When a task has failed twice and needs stronger reasoning
+The Budget Manager plugin automatically detects task complexity and will show
+[MODEL RECOMMENDATION] when a different model tier would be more appropriate.
+Follow those recommendations by running /model haiku or /model opus as suggested.
 
 RATE LIMITS:
 - 5 seconds minimum between API calls

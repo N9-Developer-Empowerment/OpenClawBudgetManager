@@ -9,6 +9,7 @@ import {
   detectTaskComplexity,
   isHeartbeatMessage,
   getLocalModels,
+  getModelRecommendation,
 } from "../src/budget-gate.js";
 import { loadChainBudget, recordProviderTransaction } from "../src/chain-budget-store.js";
 import type { ChainConfig } from "../src/provider-chain.js";
@@ -73,6 +74,83 @@ describe("Budget Gate", () => {
       ];
 
       expect(detectTaskType("debug this function", messages)).toBe("vision");
+    });
+  });
+
+  describe("getModelRecommendation", () => {
+    describe("when task is simple", () => {
+      it("should recommend Haiku when using Opus", () => {
+        const recommendation = getModelRecommendation("simple", "anthropic/claude-opus-4-5-20251101");
+
+        expect(recommendation).toContain("[MODEL RECOMMENDATION]");
+        expect(recommendation).toContain("Simple task detected");
+        expect(recommendation).toContain("/model haiku");
+        expect(recommendation).toContain("Opus ($0.005/$0.025)");
+      });
+
+      it("should recommend Haiku when using Sonnet", () => {
+        const recommendation = getModelRecommendation("simple", "anthropic/claude-sonnet-4-20250514");
+
+        expect(recommendation).toContain("[MODEL RECOMMENDATION]");
+        expect(recommendation).toContain("Simple task detected");
+        expect(recommendation).toContain("/model haiku");
+        expect(recommendation).toContain("Sonnet ($0.003/$0.015)");
+      });
+
+      it("should NOT recommend when already using Haiku", () => {
+        const recommendation = getModelRecommendation("simple", "anthropic/claude-3-5-haiku-20241022");
+
+        expect(recommendation).toBeNull();
+      });
+    });
+
+    describe("when task is complex", () => {
+      it("should recommend Opus when using Haiku", () => {
+        const recommendation = getModelRecommendation("complex", "anthropic/claude-3-5-haiku-20241022");
+
+        expect(recommendation).toContain("[MODEL RECOMMENDATION]");
+        expect(recommendation).toContain("Complex task detected");
+        expect(recommendation).toContain("/model opus");
+        expect(recommendation).toContain("Haiku ($0.0008/$0.004)");
+      });
+
+      it("should NOT recommend when already using Opus", () => {
+        const recommendation = getModelRecommendation("complex", "anthropic/claude-opus-4-5-20251101");
+
+        expect(recommendation).toBeNull();
+      });
+
+      it("should NOT recommend when using Sonnet", () => {
+        // Sonnet is a reasonable middle ground for complex tasks
+        const recommendation = getModelRecommendation("complex", "anthropic/claude-sonnet-4-20250514");
+
+        expect(recommendation).toBeNull();
+      });
+    });
+
+    describe("when task is medium", () => {
+      it("should NOT recommend any model change", () => {
+        expect(getModelRecommendation("medium", "anthropic/claude-opus-4-5-20251101")).toBeNull();
+        expect(getModelRecommendation("medium", "anthropic/claude-sonnet-4-20250514")).toBeNull();
+        expect(getModelRecommendation("medium", "anthropic/claude-3-5-haiku-20241022")).toBeNull();
+      });
+    });
+
+    describe("model name matching", () => {
+      it("should be case-insensitive when detecting model tier", () => {
+        expect(getModelRecommendation("simple", "Claude-Opus-4")).toContain("/model haiku");
+        expect(getModelRecommendation("simple", "CLAUDE-SONNET-4")).toContain("/model haiku");
+        expect(getModelRecommendation("complex", "claude-HAIKU-3.5")).toContain("/model opus");
+      });
+
+      it("should work with various model ID formats", () => {
+        // With provider prefix
+        expect(getModelRecommendation("simple", "anthropic/claude-opus-4-5")).toContain("/model haiku");
+        // Without provider prefix
+        expect(getModelRecommendation("simple", "claude-opus-4")).toContain("/model haiku");
+        // Legacy format
+        expect(getModelRecommendation("complex", "claude-3-5-haiku")).toContain("/model opus");
+      });
     });
   });
 

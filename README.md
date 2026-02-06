@@ -268,10 +268,7 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 **When on Anthropic:**
 
 - **SESSION INITIALIZATION**: Load only essential context
-- **MODEL SELECTION** (tiered):
-  - **Sonnet** (default): Code implementation, bug fixing, code review, multi-step analysis
-  - **Haiku** (switch down): Routine tasks, simple queries, status checks
-  - **Opus** (switch up): Architecture decisions, security audits, complex refactoring, deep reasoning
+- **MODEL SELECTION**: Sonnet is the default; automatic `[MODEL RECOMMENDATION]` messages suggest when to switch
 - **RATE LIMITS**: 5s between API calls, 10s between searches
 
 **When on fallback providers (Moonshot, DeepSeek, etc.):**
@@ -279,7 +276,32 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 - **SESSION INITIALIZATION**: Load only essential context
 - **RATE LIMITS**: Same as above
 - **BUDGET AWARENESS**: Notes that Anthropic budget was exhausted
-- (No Haiku/Sonnet rules since those are Anthropic-specific)
+
+### Automatic Model Recommendations
+
+The plugin detects task complexity and recommends the optimal model tier:
+
+| Complexity | Detection Criteria | Recommended Model |
+|------------|-------------------|-------------------|
+| **Simple** | Short prompts, single-turn Q&A, status checks | Haiku ($0.0008/$0.004) |
+| **Medium** | Code changes, multi-step instructions | Sonnet (default) |
+| **Complex** | Architecture, security audit, multi-file refactors | Opus ($0.005/$0.025) |
+
+When a mismatch is detected (e.g., simple task on Opus, complex task on Haiku), the plugin injects a recommendation:
+
+```
+[MODEL RECOMMENDATION] Simple task detected. For cost efficiency, consider switching to Haiku: /model haiku
+Current: Opus ($0.005/$0.025) → Recommended: Haiku ($0.0008/$0.004 per 1K tokens)
+```
+
+**To switch models:**
+- `/model haiku` - Use Haiku for simple tasks
+- `/model sonnet` - Use Sonnet (default) for most work
+- `/model opus` - Use Opus for complex reasoning
+
+The `AUTO_MODEL_ROUTING` environment variable controls this behavior:
+- `advisory` (default) - Show recommendations, user decides
+- `off` - Disable recommendations
 
 ### Expected Savings
 
@@ -372,6 +394,7 @@ Or in chain mode:
 | Variable | Default | Description |
 |---|---|---|
 | `USE_CHAIN_MODE` | `false` | Enable multi-provider chain mode |
+| `AUTO_MODEL_ROUTING` | `advisory` | Model recommendations: `advisory` (show suggestions) or `off` |
 | `BUDGET_DATA_DIR` | `./data` | Directory for runtime data files |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API base URL |
 | `OPENCLAW_CONFIG` | `~/.openclaw/openclaw.json` | Path to OpenClaw config file |
@@ -397,15 +420,85 @@ Or in chain mode:
 | `OPENAI_DAILY_BUDGET_USD` | `1.00` | OpenAI daily budget |
 | `{PROVIDER}_ENABLED` | `true` | Enable/disable provider |
 
+## Model Aliases
+
+The plugin configures model aliases in OpenClaw so you can easily switch models using `/model <alias>`:
+
+| Alias | Model | Provider | Cost (per 1K tokens) |
+|-------|-------|----------|---------------------|
+| `opus` | claude-opus-4-6 | Anthropic | $0.005 / $0.025 |
+| `opus45` | claude-opus-4-5 | Anthropic | $0.005 / $0.025 |
+| `sonnet` | claude-sonnet-4 | Anthropic | $0.003 / $0.015 |
+| `haiku` | claude-3.5-haiku | Anthropic | $0.0008 / $0.004 |
+| `deepseek` | deepseek-chat | DeepSeek | $0.00028 / $0.00042 |
+| `kimi` | kimi-k2.5 | Moonshot | $0.003 / $0.012 |
+| `gemini` | gemini-2.5-flash | Google | $0.000075 / $0.0003 |
+| `gemini-pro` | gemini-2.5-pro | Google | $0.00125 / $0.01 |
+| `gpt4` | gpt-4o | OpenAI | $0.0025 / $0.01 |
+| `gpt4-mini` | gpt-4o-mini | OpenAI | $0.00015 / $0.0006 |
+| `local` | qwen3:8b | Ollama | $0 / $0 |
+| `local-coder` | qwen3-coder:30b | Ollama | $0 / $0 |
+| `local-vision` | qwen3-vl:8b | Ollama | $0 / $0 |
+
+**Usage:**
+- `/model haiku` - Switch to Haiku (for simple tasks)
+- `/model sonnet` - Switch to Sonnet (default, balanced)
+- `/model opus` - Switch to Opus (for complex tasks)
+- `/new haiku` - Start a new session with Haiku
+
+**Note:** Model switching changes the model for all subsequent messages in the session, not just one message.
+
+**Tip:** The plugin's automatic model recommendations will suggest when to switch. Look for `[MODEL RECOMMENDATION]` in responses.
+
+### Adding or Updating Aliases
+
+Aliases are configured in `~/.openclaw/openclaw.json` under `agents.defaults.models`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "models": {
+        "anthropic/claude-sonnet-4-20250514": {
+          "alias": "sonnet"
+        },
+        "anthropic/claude-opus-4-6": {
+          "alias": "opus"
+        }
+      }
+    }
+  }
+}
+```
+
+**To add a new alias:**
+
+1. Edit `~/.openclaw/openclaw.json`
+2. Add an entry under `agents.defaults.models` with the full model ID as key
+3. Set the `alias` property to your preferred shorthand
+4. Restart the gateway: `openclaw gateway restart`
+
+**To update for new model versions (e.g., Sonnet 5):**
+
+1. Edit `~/.openclaw/openclaw.json`
+2. Change the model ID key to the new version (e.g., `anthropic/claude-sonnet-5`)
+3. Keep the same alias (`"alias": "sonnet"`)
+4. Update the cost in `src/index.ts` if needed
+5. Restart the gateway: `openclaw gateway restart`
+
+---
+
 ## Built-in cost table (fallback)
 
 Used only when OpenClaw doesn't provide pre-calculated cost on the message. Costs per 1K tokens:
 
 | Model | Input | Output |
 |---|---|---|
-| claude-opus-4 | $0.015 | $0.075 |
-| claude-sonnet-4 | $0.003 | $0.015 |
-| claude-3.5-haiku | $0.0008 | $0.004 |
+| claude-opus-4.6 | $0.005 | $0.025 |
+| claude-opus-4.5 | $0.005 | $0.025 |
+| claude-sonnet-4.5 | $0.003 | $0.015 |
+| claude-haiku-4.5 | $0.001 | $0.005 |
+| claude-3.5-haiku (legacy) | $0.0008 | $0.004 |
 | kimi-k2.5 | $0.003 | $0.012 |
 | deepseek-chat | $0.00028 | $0.00042 |
 | gemini-2.5-flash | $0.000075 | $0.0003 |

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { trackUsage, trackChainUsage, isLocalModel, type ModelCost } from "./usage-tracker.js";
-import { checkBudget, checkChainBudget, getLocalModels } from "./budget-gate.js";
+import { checkBudget, checkChainBudget, getLocalModels, detectTaskComplexity, getModelRecommendation } from "./budget-gate.js";
 import {
   loadSwitcherState,
   switchToLocalModel,
@@ -15,7 +15,7 @@ import {
   restartGateway,
 } from "./model-switcher.js";
 import { loadChainConfig, applyEnvOverrides } from "./provider-chain.js";
-import { loadChainBudget, getActiveProvider } from "./chain-budget-store.js";
+import { loadChainBudgetWithStatus, getActiveProvider } from "./chain-budget-store.js";
 import { truncateActiveSession } from "./context-manager.js";
 
 // Load .env file from plugin directory if it exists
@@ -55,6 +55,10 @@ const DISABLE_PROMPT_OPTIMIZATION = process.env.DISABLE_PROMPT_OPTIMIZATION?.toL
 const CONTEXT_TRUNCATION_ENABLED = process.env.CONTEXT_TRUNCATION_ENABLED?.toLowerCase() !== "false";
 const CONTEXT_MAX_TOKENS = parseInt(process.env.CONTEXT_MAX_TOKENS ?? "120000", 10);
 const CONTEXT_KEEP_RECENT = parseInt(process.env.CONTEXT_KEEP_RECENT ?? "20", 10);
+
+// Model routing settings: "off" | "advisory" (default)
+// Advisory mode injects model recommendations based on task complexity
+const AUTO_MODEL_ROUTING = process.env.AUTO_MODEL_ROUTING?.toLowerCase() ?? "advisory";
 const SESSION_KEY = process.env.SESSION_KEY ?? "agent:main:main";
 const OPENCLAW_SESSIONS_DIR = path.join(os.homedir(), ".openclaw", "agents", "main", "sessions");
 const OPENCLAW_SESSIONS_INDEX = path.join(os.homedir(), ".openclaw", "agents", "main", "sessions.json");
@@ -84,16 +88,30 @@ function estimateContextTokens(prompt: string, messages: unknown[]): number {
 }
 
 const DEFAULT_COSTS: Record<string, ModelCost> = {
-  // Anthropic (bare and provider-prefixed variants)
+  // Anthropic Claude 4.5/4.6 series (Feb 2026 pricing: per 1K tokens)
+  // Opus 4.5/4.6: $5/M input, $25/M output
+  "claude-opus-4-6": { input: 0.005, output: 0.025 },
+  "anthropic/claude-opus-4-6": { input: 0.005, output: 0.025 },
+  "claude-opus-4-5-20251101": { input: 0.005, output: 0.025 },
+  "anthropic/claude-opus-4-5-20251101": { input: 0.005, output: 0.025 },
+  "anthropic/claude-opus-4-5": { input: 0.005, output: 0.025 },
+  "anthropic/claude-opus-4": { input: 0.005, output: 0.025 },
+  // Sonnet 4.5: $3/M input, $15/M output
+  "claude-sonnet-4-5": { input: 0.003, output: 0.015 },
+  "anthropic/claude-sonnet-4-5": { input: 0.003, output: 0.015 },
   "claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
   "anthropic/claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
   "anthropic/claude-sonnet-4": { input: 0.003, output: 0.015 },
-  "claude-opus-4-20250514": { input: 0.015, output: 0.075 },
-  "anthropic/claude-opus-4-20250514": { input: 0.015, output: 0.075 },
-  "anthropic/claude-opus-4-5": { input: 0.015, output: 0.075 },
-  "anthropic/claude-opus-4": { input: 0.015, output: 0.075 },
+  // Haiku 4.5: $1/M input, $5/M output
+  "claude-haiku-4-5": { input: 0.001, output: 0.005 },
+  "anthropic/claude-haiku-4-5": { input: 0.001, output: 0.005 },
+  // Haiku 3.5 (legacy): $0.80/M input, $4/M output
   "claude-3-5-haiku-20241022": { input: 0.0008, output: 0.004 },
+  "anthropic/claude-3-5-haiku-20241022": { input: 0.0008, output: 0.004 },
   "anthropic/claude-3-5-haiku": { input: 0.0008, output: 0.004 },
+  // Legacy Opus 4 (older pricing)
+  "claude-opus-4-20250514": { input: 0.005, output: 0.025 },
+  "anthropic/claude-opus-4-20250514": { input: 0.005, output: 0.025 },
 
   // Moonshot
   "kimi-k2.5": { input: 0.003, output: 0.012 },
@@ -281,10 +299,9 @@ function registerChainMode(api: OpenClawPluginApi) {
   try {
     const rawConfig = loadChainConfig(CHAIN_CONFIG_FILE);
     const config = applyEnvOverrides(rawConfig);
-    const budgetData = loadChainBudget(CHAIN_BUDGET_FILE, config);
-    const todayString = new Date().toISOString().split("T")[0];
+    const { data: budgetData, wasReset } = loadChainBudgetWithStatus(CHAIN_BUDGET_FILE, config);
 
-    if (budgetData.date !== todayString) {
+    if (wasReset) {
       api.logger.info("[budget-manager] New day detected, restoring first provider");
       restoreFirstProvider(CHAIN_CONFIG_FILE, CHAIN_BUDGET_FILE, api.logger).catch((err) => {
         api.logger.error("[budget-manager] Failed to restore first provider:", err);
@@ -329,6 +346,9 @@ function registerChainMode(api: OpenClawPluginApi) {
           );
         }
 
+        // Build context to prepend (optimization rules + model recommendation)
+        const contextParts: string[] = [];
+
         // Inject provider-appropriate optimization rules (unless disabled).
         // Skip injection when context is already large to avoid hitting context window limits.
         if (!DISABLE_PROMPT_OPTIMIZATION) {
@@ -339,8 +359,26 @@ function registerChainMode(api: OpenClawPluginApi) {
             );
           } else {
             const optimizationRules = getOptimizationRules(decision.currentProvider);
-            return { prependContext: optimizationRules };
+            contextParts.push(optimizationRules);
           }
+        }
+
+        // Inject model recommendation based on task complexity (advisory mode)
+        if (AUTO_MODEL_ROUTING === "advisory") {
+          const currentModel = (_event.model as string) ?? "";
+          const complexity = detectTaskComplexity(prompt, messages);
+          const recommendation = getModelRecommendation(complexity, currentModel);
+
+          if (recommendation) {
+            api.logger.info(
+              `[budget-manager] Task complexity: ${complexity}, model: ${currentModel} → suggesting switch`,
+            );
+            contextParts.push(recommendation);
+          }
+        }
+
+        if (contextParts.length > 0) {
+          return { prependContext: contextParts.join("\n\n") };
         }
 
         return undefined;
@@ -368,9 +406,12 @@ function registerChainMode(api: OpenClawPluginApi) {
       if (!result) return;
 
       api.logger.info(
+        `[budget-manager] Model: ${result.aggregated.model} (event.model=${modelId})`
+      );
+      api.logger.info(
         `[budget-manager] Tracked ${result.providerId}: ` +
           `${result.aggregated.input_tokens} in, ${result.aggregated.output_tokens} out, ` +
-          `$${result.aggregated.cost.toFixed(4)}`,
+          `$${result.aggregated.cost.toFixed(6)}`,
       );
 
       // Check if we need to switch providers

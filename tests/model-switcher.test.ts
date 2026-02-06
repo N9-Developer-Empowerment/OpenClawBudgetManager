@@ -534,10 +534,9 @@ describe("Model Switcher", () => {
       const rules = getOptimizationRules("anthropic");
 
       expect(rules).toBe(ANTHROPIC_OPTIMIZATION_RULES);
-      expect(rules).toContain("MODEL SELECTION RULE (Anthropic)");
-      expect(rules).toContain("Default: Use Sonnet");
-      expect(rules).toContain("Switch DOWN to Haiku");
-      expect(rules).toContain("Switch UP to Opus");
+      expect(rules).toContain("MODEL SELECTION (Anthropic)");
+      expect(rules).toContain("Default: Sonnet");
+      expect(rules).toContain("[MODEL RECOMMENDATION]");
     });
 
     it("should return general rules for non-Anthropic providers", () => {
@@ -558,17 +557,12 @@ describe("Model Switcher", () => {
       expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Load ONLY essential context");
     });
 
-    it("should contain tiered model selection rules (Sonnet default, Haiku down, Opus up)", () => {
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("MODEL SELECTION RULE");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Default: Use Sonnet");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch DOWN to Haiku");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Switch UP to Opus");
-    });
-
-    it("should recommend Opus for complex tasks and when tasks fail", () => {
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Architecture and system design");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Security analysis");
-      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("failed twice");
+    it("should contain model selection with automatic recommendations", () => {
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("MODEL SELECTION (Anthropic)");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("Default: Sonnet");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("[MODEL RECOMMENDATION]");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("/model haiku");
+      expect(ANTHROPIC_OPTIMIZATION_RULES).toContain("/model opus");
     });
 
     it("should contain rate limits", () => {

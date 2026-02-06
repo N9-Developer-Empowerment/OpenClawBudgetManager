@@ -82,6 +82,44 @@ export function detectTaskType(prompt: string, messages: unknown[]): TaskType {
 }
 
 /**
+ * Get model recommendation based on task complexity and current model.
+ * Returns a recommendation string to inject into context, or null if no recommendation.
+ *
+ * - Simple task on expensive model (Opus/Sonnet) → recommend Haiku
+ * - Complex task on cheap model (Haiku) → recommend Opus
+ * - Otherwise → no recommendation
+ */
+export function getModelRecommendation(
+  complexity: TaskComplexity,
+  currentModel: string,
+): string | null {
+  const isHaiku = currentModel.toLowerCase().includes("haiku");
+  const isOpus = currentModel.toLowerCase().includes("opus");
+  const isSonnet = currentModel.toLowerCase().includes("sonnet");
+
+  // Simple task on expensive model → recommend Haiku
+  if (complexity === "simple" && (isOpus || isSonnet)) {
+    const currentTier = isOpus ? "Opus ($0.005/$0.025)" : "Sonnet ($0.003/$0.015)";
+    return (
+      `[MODEL RECOMMENDATION] Simple task detected. ` +
+      `For cost efficiency, consider switching to Haiku: /model haiku\n` +
+      `Current: ${currentTier} → Recommended: Haiku ($0.0008/$0.004 per 1K tokens)`
+    );
+  }
+
+  // Complex task on cheap model → recommend Opus
+  if (complexity === "complex" && isHaiku) {
+    return (
+      `[MODEL RECOMMENDATION] Complex task detected requiring deep reasoning. ` +
+      `Consider switching to Opus for better results: /model opus\n` +
+      `Current: Haiku ($0.0008/$0.004) → Recommended: Opus ($0.005/$0.025 per 1K tokens)`
+    );
+  }
+
+  return null;
+}
+
+/**
  * Detect task complexity to enable smart model routing.
  * - Simple: Short prompts, single-turn Q&A, basic formatting, status checks
  * - Medium: Code changes, multi-step instructions, analysis
