@@ -1,19 +1,54 @@
 {
   "providers": [
     {
-      "id": "anthropic",
+      "id": "bytedance-ark",
       "priority": 1,
-      "maxDailyUsd": 5.00,
+      "maxDailyUsd": 3.00,
       "enabled": true,
       "models": {
-        "default": "claude-sonnet-4-20250514",
-        "coding": "claude-sonnet-4-20250514",
-        "vision": "claude-sonnet-4-20250514"
+        "default": "seed-2-0-mini-260215"
+      }
+    },
+    {
+      "id": "openrouter-glm",
+      "priority": 2,
+      "maxDailyUsd": 3.00,
+      "enabled": true,
+      "models": {
+        "default": "glm-5"
+      }
+    },
+    {
+      "id": "minimax",
+      "priority": 3,
+      "maxDailyUsd": 3.00,
+      "enabled": true,
+      "models": {
+        "default": "MiniMax-M2.5"
+      }
+    },
+    {
+      "id": "moonshot",
+      "priority": 4,
+      "maxDailyUsd": 3.00,
+      "enabled": true,
+      "models": {
+        "default": "kimi-k2.5",
+        "vision": "kimi-k2.5"
+      }
+    },
+    {
+      "id": "openrouter-qwen",
+      "priority": 5,
+      "maxDailyUsd": 3.00,
+      "enabled": true,
+      "models": {
+        "default": "qwen3.5-plus-02-15"
       }
     },
     {
       "id": "deepseek",
-      "priority": 2,
+      "priority": 6,
       "maxDailyUsd": 5.00,
       "enabled": true,
       "models": {
@@ -22,18 +57,8 @@
       }
     },
     {
-      "id": "moonshot",
-      "priority": 3,
-      "maxDailyUsd": 1.00,
-      "enabled": true,
-      "models": {
-        "default": "kimi-k2.5",
-        "vision": "kimi-k2.5"
-      }
-    },
-    {
       "id": "google",
-      "priority": 4,
+      "priority": 7,
       "maxDailyUsd": 3.00,
       "enabled": true,
       "models": {
@@ -43,13 +68,24 @@
     },
     {
       "id": "openai",
-      "priority": 5,
+      "priority": 8,
       "maxDailyUsd": 3.00,
       "enabled": true,
       "models": {
         "default": "gpt-4o-mini",
         "coding": "gpt-4o",
         "vision": "gpt-4o"
+      }
+    },
+    {
+      "id": "anthropic",
+      "priority": 9,
+      "maxDailyUsd": 5.00,
+      "enabled": true,
+      "models": {
+        "default": "claude-sonnet-4-20250514",
+        "coding": "claude-sonnet-4-20250514",
+        "vision": "claude-sonnet-4-20250514"
       }
     },
     {

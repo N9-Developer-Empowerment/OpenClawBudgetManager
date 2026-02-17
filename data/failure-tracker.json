@@ -1,0 +1,9 @@
+{
+  "date": "2026-02-17",
+  "providers": {
+    "bytedance-ark": {
+      "consecutiveFailures": 0,
+      "lastFailureAt": "2026-02-17T10:49:09.909Z"
+    }
+  }
+}

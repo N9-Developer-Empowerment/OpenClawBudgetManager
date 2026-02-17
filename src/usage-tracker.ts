@@ -60,6 +60,16 @@ export function isLocalModel(modelId: string): boolean {
   // Check for ollama prefix
   if (modelId.startsWith("ollama/")) return true;
 
+  // Cloud providers that may have model names overlapping with local patterns
+  // (e.g., openrouter/qwen/..., minimax/..., bytedance-ark/...)
+  if (
+    modelId.startsWith("openrouter/") ||
+    modelId.startsWith("minimax/") ||
+    modelId.startsWith("bytedance-ark/")
+  ) {
+    return false;
+  }
+
   // Check for common local model patterns (Ollama model names)
   const lowerModel = modelId.toLowerCase();
   const localPatterns = [
@@ -182,10 +192,36 @@ const PROVIDER_PREFIXES = [
   "deepseek",
   "google",
   "openai",
+  "minimax",
+  "bytedance-ark",
   "ollama",
 ];
 
+// Maps OpenRouter org segments to budget provider IDs
+const OPENROUTER_MODEL_MAP: Record<string, string> = {
+  "z-ai": "openrouter-glm",
+  "qwen": "openrouter-qwen",
+};
+
 export function detectProviderFromModel(modelId: string): string {
+  // Handle bytedance-ark prefix
+  if (modelId.startsWith("bytedance-ark/")) {
+    return "bytedance-ark";
+  }
+
+  // Handle openrouter sub-providers (e.g., "openrouter/z-ai/glm-5")
+  if (modelId.startsWith("openrouter/")) {
+    const parts = modelId.split("/");
+    if (parts.length >= 3) {
+      const org = parts[1];
+      if (OPENROUTER_MODEL_MAP[org]) {
+        return OPENROUTER_MODEL_MAP[org];
+      }
+    }
+    // Generic openrouter fallback — shouldn't normally happen
+    return "openrouter";
+  }
+
   // Check for explicit provider prefix (e.g., "anthropic/claude-sonnet-4")
   if (modelId.includes("/")) {
     const [provider] = modelId.split("/");
@@ -200,8 +236,20 @@ export function detectProviderFromModel(modelId: string): string {
   if (lowerModel.includes("claude") || lowerModel.includes("anthropic")) {
     return "anthropic";
   }
+  if (lowerModel.includes("doubao") || lowerModel.includes("seed-2-0") || lowerModel.includes("seed-2.0") || lowerModel.includes("seed2")) {
+    return "bytedance-ark";
+  }
+  if (lowerModel.includes("glm")) {
+    return "openrouter-glm";
+  }
+  if (lowerModel.includes("minimax") || lowerModel.includes("m2.5")) {
+    return "minimax";
+  }
   if (lowerModel.includes("kimi") || lowerModel.includes("moonshot")) {
     return "moonshot";
+  }
+  if (lowerModel.includes("qwen3.5") || lowerModel.includes("qwen-3.5")) {
+    return "openrouter-qwen";
   }
   if (lowerModel.includes("deepseek")) {
     return "deepseek";
@@ -216,8 +264,8 @@ export function detectProviderFromModel(modelId: string): string {
     return "ollama";
   }
 
-  // Default to anthropic if unknown
-  return "anthropic";
+  // Default to first provider if unknown
+  return "bytedance-ark";
 }
 
 // Chain-aware usage tracking

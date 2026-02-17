@@ -6,6 +6,8 @@ import {
   aggregateUsageFromMessages,
   calculateCost,
   trackUsage,
+  detectProviderFromModel,
+  isLocalModel,
   type ModelCost,
 } from "../src/usage-tracker.js";
 
@@ -364,6 +366,84 @@ describe("Usage Tracker", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("detectProviderFromModel", () => {
+    it("should detect bytedance-ark from prefix", () => {
+      expect(detectProviderFromModel("bytedance-ark/doubao-seed-2.0-pro")).toBe("bytedance-ark");
+    });
+
+    it("should detect bytedance-ark from model name pattern", () => {
+      expect(detectProviderFromModel("doubao-seed-2.0-lite")).toBe("bytedance-ark");
+    });
+
+    it("should detect openrouter-glm from full model path", () => {
+      expect(detectProviderFromModel("openrouter/z-ai/glm-5")).toBe("openrouter-glm");
+    });
+
+    it("should detect openrouter-qwen from full model path", () => {
+      expect(detectProviderFromModel("openrouter/qwen/qwen3.5-plus-02-15")).toBe("openrouter-qwen");
+    });
+
+    it("should detect minimax from prefix", () => {
+      expect(detectProviderFromModel("minimax/MiniMax-M2.5")).toBe("minimax");
+    });
+
+    it("should detect minimax from model name pattern", () => {
+      expect(detectProviderFromModel("MiniMax-M2.5")).toBe("minimax");
+    });
+
+    it("should detect glm from model name pattern", () => {
+      expect(detectProviderFromModel("glm-5")).toBe("openrouter-glm");
+    });
+
+    it("should detect qwen3.5 as openrouter-qwen, not ollama", () => {
+      expect(detectProviderFromModel("qwen3.5-plus-02-15")).toBe("openrouter-qwen");
+    });
+
+    it("should detect plain qwen as ollama (local)", () => {
+      expect(detectProviderFromModel("qwen3:8b")).toBe("ollama");
+    });
+
+    it("should still detect standard providers", () => {
+      expect(detectProviderFromModel("anthropic/claude-sonnet-4-20250514")).toBe("anthropic");
+      expect(detectProviderFromModel("moonshot/kimi-k2.5")).toBe("moonshot");
+      expect(detectProviderFromModel("deepseek/deepseek-chat")).toBe("deepseek");
+      expect(detectProviderFromModel("google/gemini-2.5-flash")).toBe("google");
+      expect(detectProviderFromModel("openai/gpt-4o-mini")).toBe("openai");
+      expect(detectProviderFromModel("ollama/qwen3:8b")).toBe("ollama");
+    });
+
+    it("should detect by model name when no prefix", () => {
+      expect(detectProviderFromModel("claude-sonnet-4")).toBe("anthropic");
+      expect(detectProviderFromModel("kimi-k2.5")).toBe("moonshot");
+      expect(detectProviderFromModel("deepseek-chat")).toBe("deepseek");
+      expect(detectProviderFromModel("gemini-2.5-flash")).toBe("google");
+      expect(detectProviderFromModel("gpt-4o")).toBe("openai");
+    });
+  });
+
+  describe("isLocalModel", () => {
+    it("should return true for ollama-prefixed models", () => {
+      expect(isLocalModel("ollama/qwen3:8b")).toBe(true);
+    });
+
+    it("should return false for openrouter models even with qwen name", () => {
+      expect(isLocalModel("openrouter/qwen/qwen3.5-plus-02-15")).toBe(false);
+    });
+
+    it("should return false for minimax models", () => {
+      expect(isLocalModel("minimax/MiniMax-M2.5")).toBe(false);
+    });
+
+    it("should return false for bytedance-ark models", () => {
+      expect(isLocalModel("bytedance-ark/doubao-seed-2.0-pro")).toBe(false);
+    });
+
+    it("should return true for bare local model names", () => {
+      expect(isLocalModel("qwen3:8b")).toBe(true);
+      expect(isLocalModel("llama3:70b")).toBe(true);
     });
   });
 });

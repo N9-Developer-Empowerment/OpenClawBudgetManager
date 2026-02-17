@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { trackUsage, trackChainUsage, isLocalModel, type ModelCost } from "./usage-tracker.js";
+import { trackUsage, trackChainUsage, isLocalModel, detectProviderFromModel, type ModelCost } from "./usage-tracker.js";
 import { checkBudget, checkChainBudget, getLocalModels, detectTaskComplexity, getModelRecommendation } from "./budget-gate.js";
 import {
   loadSwitcherState,
@@ -9,14 +9,21 @@ import {
   restoreCloudModel,
   switchToProvider,
   restoreFirstProvider,
+  syncActiveProviderModel,
   applyOptimizedConfig,
   isOptimizationApplied,
   getOptimizationRules,
   restartGateway,
 } from "./model-switcher.js";
-import { loadChainConfig, applyEnvOverrides } from "./provider-chain.js";
+import { loadChainConfig, applyEnvOverrides, getNextProvider } from "./provider-chain.js";
 import { loadChainBudgetWithStatus, getActiveProvider } from "./chain-budget-store.js";
 import { truncateActiveSession } from "./context-manager.js";
+import {
+  detectFailure,
+  recordSuccess,
+  recordFailure,
+  shouldSwitchProvider,
+} from "./failure-tracker.js";
 
 // Load .env file from plugin directory if it exists
 const ENV_FILE = path.join(import.meta.dirname, "..", ".env");
@@ -44,6 +51,10 @@ const SWITCHER_STATE_FILE = path.join(BUDGET_DATA_DIR, "switcher-state.json");
 // Chain budget paths
 const CHAIN_CONFIG_FILE = path.join(BUDGET_DATA_DIR, "provider-chain.json");
 const CHAIN_BUDGET_FILE = path.join(BUDGET_DATA_DIR, "chain-budget.json");
+
+// Failure tracking
+const FAILURE_TRACKER_FILE = path.join(BUDGET_DATA_DIR, "failure-tracker.json");
+const FAILURE_THRESHOLD = parseInt(process.env.FAILURE_THRESHOLD ?? "3", 10);
 
 // Enable chain mode via environment variable
 const USE_CHAIN_MODE = process.env.USE_CHAIN_MODE?.toLowerCase() === "true";
@@ -138,6 +149,26 @@ const DEFAULT_COSTS: Record<string, ModelCost> = {
   "openai/gpt-4o": { input: 0.0025, output: 0.01 },
   "gpt-4o-mini": { input: 0.00015, output: 0.0006 },
   "openai/gpt-4o-mini": { input: 0.00015, output: 0.0006 },
+
+  // ByteDance Ark — Seed 2.0 series (model IDs use seed-2-0-{variant}-{date} format)
+  "seed-2-0-mini-260215": { input: 0.0004, output: 0.001 },
+  "bytedance-ark/seed-2-0-mini-260215": { input: 0.0004, output: 0.001 },
+  "seed-2-0-pro-260215": { input: 0.004, output: 0.016 },
+  "bytedance-ark/seed-2-0-pro-260215": { input: 0.004, output: 0.016 },
+  "seed-2-0-lite-260215": { input: 0.0008, output: 0.002 },
+  "bytedance-ark/seed-2-0-lite-260215": { input: 0.0008, output: 0.002 },
+
+  // OpenRouter — GLM-5 (Z-AI)
+  "glm-5": { input: 0.001, output: 0.001 },
+  "openrouter/z-ai/glm-5": { input: 0.001, output: 0.001 },
+
+  // MiniMax M2.5
+  "MiniMax-M2.5": { input: 0.001, output: 0.005 },
+  "minimax/MiniMax-M2.5": { input: 0.001, output: 0.005 },
+
+  // OpenRouter — Qwen 3.5
+  "qwen3.5-plus-02-15": { input: 0.001, output: 0.003 },
+  "openrouter/qwen/qwen3.5-plus-02-15": { input: 0.001, output: 0.003 },
 
   // Local (free) — Qwen 3 via Ollama
   "qwen3:8b": { input: 0, output: 0 },
@@ -295,26 +326,31 @@ function registerLegacyMode(api: OpenClawPluginApi) {
 function registerChainMode(api: OpenClawPluginApi) {
   api.logger.info("[budget-manager] Plugin loaded (chain mode). Provider chain enabled.");
 
-  // On load: check if date changed and restore first provider if needed
+  // On load: reset budgets if new day, then always sync config to active provider
   try {
     const rawConfig = loadChainConfig(CHAIN_CONFIG_FILE);
     const config = applyEnvOverrides(rawConfig);
     const { data: budgetData, wasReset } = loadChainBudgetWithStatus(CHAIN_BUDGET_FILE, config);
 
     if (wasReset) {
-      api.logger.info("[budget-manager] New day detected, restoring first provider");
-      restoreFirstProvider(CHAIN_CONFIG_FILE, CHAIN_BUDGET_FILE, api.logger).catch((err) => {
-        api.logger.error("[budget-manager] Failed to restore first provider:", err);
-      });
-    } else {
-      const activeProvider = getActiveProvider(budgetData);
-      api.logger.info(`[budget-manager] Active provider: ${activeProvider}`);
+      api.logger.info("[budget-manager] New day detected, budgets reset");
+    }
 
-      // Only apply Anthropic optimization (Sonnet default, model aliases) when on Anthropic
-      if (activeProvider === "anthropic" && !isOptimizationApplied()) {
-        api.logger.info("[budget-manager] Applying Anthropic optimization (Sonnet default, model aliases)");
-        applyOptimizedConfig(api.logger);
-      }
+    const activeProvider = getActiveProvider(budgetData);
+    api.logger.info(`[budget-manager] Active provider: ${activeProvider}`);
+
+    // Always verify the OpenClaw config model matches the active provider.
+    // Fixes mismatches from day resets, manual restarts, or failed switches.
+    const synced = syncActiveProviderModel(activeProvider, CHAIN_CONFIG_FILE, api.logger);
+    if (synced) {
+      // Gateway is restarting — skip further init, it will run again
+      return;
+    }
+
+    // Always apply model aliases without overriding the active model
+    if (!isOptimizationApplied()) {
+      api.logger.info("[budget-manager] Applying model aliases (skipModelOverride)");
+      applyOptimizedConfig(api.logger, { skipModelOverride: true });
     }
   } catch (err) {
     api.logger.error("[budget-manager] Failed to initialize chain mode:", err);
@@ -390,18 +426,65 @@ function registerChainMode(api: OpenClawPluginApi) {
     { priority: 100 },
   );
 
-  // Hook: agent_end — track usage to provider, then switch if exhausted
+  // Hook: agent_end — detect failures, track usage, switch if needed
   api.on("agent_end", (event, _ctx) => {
     try {
       const messages = event.messages as unknown[];
-      if (!messages?.length) return;
-
       const modelId = (event.model as string) ?? "unknown";
-      const cost = resolveModelCost(modelId);
-
       const rawConfig = loadChainConfig(CHAIN_CONFIG_FILE);
       const config = applyEnvOverrides(rawConfig);
 
+      // Detect failure before tracking usage
+      const failed = detectFailure(event, messages ?? []);
+      const currentProviderId = detectProviderFromModel(modelId);
+
+      if (failed) {
+        const failCount = recordFailure(FAILURE_TRACKER_FILE, currentProviderId);
+        api.logger.warn(
+          `[budget-manager] Failure detected for ${currentProviderId} (${failCount}/${FAILURE_THRESHOLD})`,
+        );
+
+        if (shouldSwitchProvider(FAILURE_TRACKER_FILE, currentProviderId, FAILURE_THRESHOLD)) {
+          api.logger.warn(
+            `[budget-manager] Failure threshold reached for ${currentProviderId}, switching provider`,
+          );
+
+          const exhausted = [currentProviderId];
+          const nextProvider = getNextProvider(config, currentProviderId, exhausted);
+
+          if (nextProvider) {
+            switchToProvider(
+              nextProvider.id,
+              "general",
+              CHAIN_CONFIG_FILE,
+              CHAIN_BUDGET_FILE,
+              api.logger,
+              `Failures threshold reached for ${currentProviderId}`,
+            )
+              .then((switched) => {
+                if (switched) {
+                  api.logger.info(
+                    `[budget-manager] Switched to ${nextProvider.id} due to failures, gateway will restart`,
+                  );
+                }
+              })
+              .catch((err) => {
+                api.logger.error("[budget-manager] Failed to switch provider after failures:", err);
+              });
+          } else {
+            api.logger.warn("[budget-manager] No available provider to switch to after failures");
+          }
+        }
+
+        return; // Skip usage tracking for failed responses
+      }
+
+      // Successful response — reset failure counter
+      recordSuccess(FAILURE_TRACKER_FILE, currentProviderId);
+
+      if (!messages?.length) return;
+
+      const cost = resolveModelCost(modelId);
       const result = trackChainUsage(CHAIN_BUDGET_FILE, config, modelId, messages, cost);
       if (!result) return;
 
@@ -414,7 +497,7 @@ function registerChainMode(api: OpenClawPluginApi) {
           `$${result.aggregated.cost.toFixed(6)}`,
       );
 
-      // Check if we need to switch providers
+      // Check if we need to switch providers due to budget exhaustion
       const decision = checkChainBudget(CHAIN_BUDGET_FILE, CHAIN_CONFIG_FILE);
 
       if (decision.action === "switch_provider" && decision.nextProvider && decision.taskType) {
@@ -428,6 +511,7 @@ function registerChainMode(api: OpenClawPluginApi) {
           CHAIN_CONFIG_FILE,
           CHAIN_BUDGET_FILE,
           api.logger,
+          `Budget exhausted for ${decision.currentProvider}`,
         )
           .then((switched) => {
             if (switched) {

@@ -4,10 +4,10 @@
   <img src="asset/logo.png" alt="OpenClaw Budget Manager logo" width="480" />
 </p>
 
-An OpenClaw plugin that tracks daily API spend and **actively switches** to fallback providers when budgets are exhausted. Supports two modes:
+An OpenClaw plugin that tracks daily API spend and **actively switches** to fallback providers when budgets are exhausted or providers become uncommunicative. Supports two modes:
 
 - **Legacy mode**: Single daily budget with automatic switch to local Ollama models
-- **Chain mode**: Multi-provider fallback chain with per-provider budgets
+- **Chain mode**: Multi-provider fallback chain with per-provider budgets and failure-based switching
 
 ## How it works
 
@@ -23,13 +23,14 @@ The budget resets automatically each day.
 
 ### Active model switching
 
-When budgets run out, the plugin **patches `~/.openclaw/openclaw.json`** to change the default model, then restarts the gateway:
+When budgets run out **or a provider fails repeatedly**, the plugin **patches `~/.openclaw/openclaw.json`** to change the default model, then restarts the gateway:
 
-1. **`agent_end` hook fires** — after tracking spend, the plugin checks remaining budget
-2. **Budget exhausted** — in legacy mode, switches to Ollama; in chain mode, switches to next provider
-3. **Config write** — sets `agents.defaults.model.primary` to the new model
-4. **Gateway restart** — the plugin runs `openclaw gateway restart` to apply changes
-5. **Next day** — budget resets, plugin restores the primary provider
+1. **`agent_end` hook fires** — the plugin first checks for failures, then tracks spend
+2. **Failure detected** — if a provider returns errors, empty responses, or rate limits, failures are counted. After 3 consecutive failures (configurable via `FAILURE_THRESHOLD`), the plugin switches to the next provider
+3. **Budget exhausted** — in legacy mode, switches to Ollama; in chain mode, switches to next provider
+4. **Config write** — sets `agents.defaults.model.primary` to the new model
+5. **Gateway restart** — the plugin runs `openclaw gateway restart` to apply changes
+6. **Next day** — budget and failure counters reset, plugin restores the first provider
 
 ---
 
@@ -39,16 +40,27 @@ Chain mode enables a **provider fallback chain** with individual budgets per pro
 
 ### Provider Chain (Default Configuration)
 
-| Priority | Provider | Type | Default Budget | Notes |
-|----------|----------|------|----------------|-------|
-| 1 | Anthropic | postpaid | $3.00 | Primary, best quality |
-| 2 | Moonshot | prepaid | $2.00 | Prepaid, can't overspend |
-| 3 | DeepSeek | prepaid | $1.00 | Extremely cheap |
-| 4 | Google | postpaid | $1.00 | Gemini models |
-| 5 | OpenAI | postpaid | $1.00 | GPT models |
-| 6 | Ollama | free | $0 | Final fallback, local |
+Chinese AI models are tried first; Anthropic is used as a last resort before the free local fallback.
 
-**Total daily budget: ~$8.00** (configurable per provider)
+| Priority | Provider ID | Model | API Key | Budget |
+|----------|------------|-------|---------|--------|
+| 1 | `bytedance-ark` | `bytedance-ark/doubao-seed-2.0-pro` | BYTEDANCE_ARK_API_KEY | $3/day |
+| 2 | `openrouter-glm` | `openrouter/z-ai/glm-5` | OPENROUTER_API_KEY | $3/day |
+| 3 | `minimax` | `minimax/MiniMax-M2.5` | MINIMAX_API_KEY | $3/day |
+| 4 | `moonshot` | `moonshot/kimi-k2.5` | MOONSHOT_API_KEY | $3/day |
+| 5 | `openrouter-qwen` | `openrouter/qwen/qwen3.5-plus-02-15` | OPENROUTER_API_KEY | $3/day |
+| 6 | `deepseek` | `deepseek/deepseek-chat` | DEEPSEEK_API_KEY | $5/day |
+| 7 | `google` | `google/gemini-2.5-flash` | GEMINI_API_KEY | $3/day |
+| 8 | `openai` | `openai/gpt-4o-mini` | OPENAI_API_KEY | $3/day |
+| 9 | `anthropic` | `anthropic/claude-sonnet-4-20250514` | ANTHROPIC_API_KEY | $5/day |
+| 99 | `ollama` | `ollama/qwen3:8b` | (local) | $0 |
+
+**Total daily budget: ~$31.00** (configurable per provider)
+
+**Notes:**
+- `openrouter-glm` and `openrouter-qwen` share the same `OPENROUTER_API_KEY` but have separate budget tracking
+- ByteDance Ark uses an OpenAI-compatible API at `https://ark.ap-southeast.bytepluses.com/api/v3` (international)
+- Switching happens on budget exhaustion **or** after 3 consecutive failures (configurable via `FAILURE_THRESHOLD`)
 
 ### Enabling Chain Mode
 
@@ -76,44 +88,45 @@ The provider chain is configured in `data/provider-chain.json`:
 {
   "providers": [
     {
-      "id": "anthropic",
+      "id": "bytedance-ark",
       "priority": 1,
       "maxDailyUsd": 3.00,
       "enabled": true,
       "models": {
-        "default": "claude-sonnet-4-20250514",
-        "coding": "claude-sonnet-4-20250514",
-        "vision": "claude-sonnet-4-20250514"
+        "default": "doubao-seed-2.0-pro"
       }
     },
     {
-      "id": "moonshot",
+      "id": "openrouter-glm",
       "priority": 2,
-      "maxDailyUsd": 2.00,
+      "maxDailyUsd": 3.00,
       "enabled": true,
       "models": {
-        "default": "kimi-k2.5",
-        "vision": "kimi-k2.5"
+        "default": "glm-5"
       }
     }
-    // ... more providers
+    // ... more providers (see data/provider-chain.json for full list)
   ]
 }
 ```
 
 ### Per-Provider Budget Overrides
 
-Override budgets via environment variables:
+Override budgets via environment variables. Hyphens in provider IDs become underscores:
 
 ```bash
-ANTHROPIC_DAILY_BUDGET_USD=5.00
+BYTEDANCE_ARK_DAILY_BUDGET_USD=5.00
+OPENROUTER_GLM_DAILY_BUDGET_USD=3.00
+MINIMAX_DAILY_BUDGET_USD=3.00
 MOONSHOT_DAILY_BUDGET_USD=3.00
-DEEPSEEK_DAILY_BUDGET_USD=2.00
+DEEPSEEK_DAILY_BUDGET_USD=5.00
+ANTHROPIC_DAILY_BUDGET_USD=5.00
 ```
 
 ### Disable Providers Temporarily
 
 ```bash
+BYTEDANCE_ARK_ENABLED=false
 MOONSHOT_ENABLED=false
 GOOGLE_ENABLED=false
 ```
@@ -126,6 +139,63 @@ Add all providers to `~/.openclaw/openclaw.json`:
 {
   "models": {
     "providers": {
+      "bytedance-ark": {
+        "baseUrl": "https://ark.ap-southeast.bytepluses.com/api/v3",
+        "apiKey": "${BYTEDANCE_ARK_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "doubao-seed-2.0-pro",
+            "name": "Seed 2.0 Pro",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0.004, "output": 0.016, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          }
+        ]
+      },
+      "openrouter": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "${OPENROUTER_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "z-ai/glm-5",
+            "name": "GLM-5",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0.001, "output": 0.001, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          },
+          {
+            "id": "qwen/qwen3.5-plus-02-15",
+            "name": "Qwen 3.5 Plus",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0.001, "output": 0.003, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          }
+        ]
+      },
+      "minimax": {
+        "baseUrl": "https://api.minimaxi.chat/v1",
+        "apiKey": "${MINIMAX_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "MiniMax-M2.5",
+            "name": "MiniMax M2.5",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0.001, "output": 0.005, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          }
+        ]
+      },
       "moonshot": {
         "baseUrl": "https://api.moonshot.ai/v1",
         "apiKey": "${MOONSHOT_API_KEY}",
@@ -254,14 +324,13 @@ Chain mode automatically applies cost optimizations from the [OpenClaw Token Opt
 - **When on Anthropic**: Applies Sonnet default + Haiku/Sonnet/Opus routing rules
 - **When on other providers**: Uses that provider's default model + general optimization rules
 
-### Config Changes (Anthropic Only)
+### Config Changes
 
-When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.json`:
+On startup, the plugin patches `~/.openclaw/openclaw.json` with model aliases for all providers (without overriding the active model). When Anthropic is the active provider, it also sets Sonnet as the default.
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| Default model | `claude-sonnet-4` | Best balance of quality and cost |
-| Model aliases | `sonnet`, `haiku`, `opus` | Easy switching in prompts |
+| Model aliases | `seed`, `glm`, `minimax`, `kimi`, `qwen35`, `deepseek`, `gemini`, `sonnet`, `haiku`, `opus`, etc. | Easy switching in prompts |
 
 ### Prompt Rules Injected
 
@@ -271,11 +340,11 @@ When Anthropic is the active provider, the plugin patches `~/.openclaw/openclaw.
 - **MODEL SELECTION**: Sonnet is the default; automatic `[MODEL RECOMMENDATION]` messages suggest when to switch
 - **RATE LIMITS**: 5s between API calls, 10s between searches
 
-**When on fallback providers (Moonshot, DeepSeek, etc.):**
+**When on other providers:**
 
 - **SESSION INITIALIZATION**: Load only essential context
 - **RATE LIMITS**: Same as above
-- **BUDGET AWARENESS**: Notes that Anthropic budget was exhausted
+- **BUDGET AWARENESS**: Notes per-provider budget limits and automatic provider switching
 
 ### Automatic Model Recommendations
 
@@ -314,18 +383,28 @@ The `AUTO_MODEL_ROUTING` environment variable controls this behavior:
 ### Provider Fallback Flow
 
 ```
-Anthropic (Sonnet default) → budget exhausted
+ByteDance Ark (Seed 2.0 Pro) → budget exhausted or 3 failures
     ↓
-Moonshot (kimi-k2.5) → budget exhausted
+OpenRouter GLM (GLM-5) → budget exhausted or 3 failures
     ↓
-DeepSeek (deepseek-chat) → budget exhausted
+MiniMax (M2.5) → budget exhausted or 3 failures
     ↓
-...
+Moonshot (kimi-k2.5) → budget exhausted or 3 failures
+    ↓
+OpenRouter Qwen (Qwen 3.5) → budget exhausted or 3 failures
+    ↓
+DeepSeek (deepseek-chat) → budget exhausted or 3 failures
+    ↓
+Google (Gemini 2.5 Flash) → budget exhausted or 3 failures
+    ↓
+OpenAI (GPT-4o-mini) → budget exhausted or 3 failures
+    ↓
+Anthropic (Sonnet 4) → budget exhausted or 3 failures
     ↓
 Ollama (qwen3:8b, free)
 ```
 
-Each provider uses its own configured default model. The Sonnet/Haiku/Opus routing rules only apply to Anthropic.
+Each provider uses its own configured default model. The Sonnet/Haiku/Opus routing rules only apply to Anthropic. Failure counters reset daily along with budgets.
 
 ### Overriding local models
 
@@ -384,7 +463,7 @@ Or in chain mode:
 
 ```
 [budget-manager] Plugin loaded (chain mode). Provider chain enabled.
-[budget-manager] Active provider: anthropic
+[budget-manager] Active provider: bytedance-ark
 ```
 
 ## Configuration
@@ -413,12 +492,17 @@ Or in chain mode:
 
 | Variable | Default | Description |
 |---|---|---|
-| `ANTHROPIC_DAILY_BUDGET_USD` | `3.00` | Anthropic daily budget |
-| `MOONSHOT_DAILY_BUDGET_USD` | `2.00` | Moonshot daily budget |
-| `DEEPSEEK_DAILY_BUDGET_USD` | `1.00` | DeepSeek daily budget |
-| `GOOGLE_DAILY_BUDGET_USD` | `1.00` | Google daily budget |
-| `OPENAI_DAILY_BUDGET_USD` | `1.00` | OpenAI daily budget |
-| `{PROVIDER}_ENABLED` | `true` | Enable/disable provider |
+| `BYTEDANCE_ARK_DAILY_BUDGET_USD` | `3.00` | ByteDance Ark daily budget |
+| `OPENROUTER_GLM_DAILY_BUDGET_USD` | `3.00` | OpenRouter GLM daily budget |
+| `MINIMAX_DAILY_BUDGET_USD` | `3.00` | MiniMax daily budget |
+| `MOONSHOT_DAILY_BUDGET_USD` | `3.00` | Moonshot daily budget |
+| `OPENROUTER_QWEN_DAILY_BUDGET_USD` | `3.00` | OpenRouter Qwen daily budget |
+| `DEEPSEEK_DAILY_BUDGET_USD` | `5.00` | DeepSeek daily budget |
+| `GOOGLE_DAILY_BUDGET_USD` | `3.00` | Google daily budget |
+| `OPENAI_DAILY_BUDGET_USD` | `3.00` | OpenAI daily budget |
+| `ANTHROPIC_DAILY_BUDGET_USD` | `5.00` | Anthropic daily budget |
+| `{PROVIDER}_ENABLED` | `true` | Enable/disable provider (hyphens → underscores) |
+| `FAILURE_THRESHOLD` | `3` | Consecutive failures before switching provider |
 
 ## Model Aliases
 
@@ -426,16 +510,21 @@ The plugin configures model aliases in OpenClaw so you can easily switch models 
 
 | Alias | Model | Provider | Cost (per 1K tokens) |
 |-------|-------|----------|---------------------|
-| `opus` | claude-opus-4-6 | Anthropic | $0.005 / $0.025 |
-| `opus45` | claude-opus-4-5 | Anthropic | $0.005 / $0.025 |
-| `sonnet` | claude-sonnet-4 | Anthropic | $0.003 / $0.015 |
-| `haiku` | claude-3.5-haiku | Anthropic | $0.0008 / $0.004 |
-| `deepseek` | deepseek-chat | DeepSeek | $0.00028 / $0.00042 |
+| `seed` | doubao-seed-2.0-pro | ByteDance Ark | $0.004 / $0.016 |
+| `seed-lite` | doubao-seed-2.0-lite | ByteDance Ark | $0.0008 / $0.002 |
+| `glm` | glm-5 | OpenRouter (Z-AI) | $0.001 / $0.001 |
+| `minimax` | MiniMax-M2.5 | MiniMax | $0.001 / $0.005 |
 | `kimi` | kimi-k2.5 | Moonshot | $0.003 / $0.012 |
+| `qwen35` | qwen3.5-plus-02-15 | OpenRouter (Qwen) | $0.001 / $0.003 |
+| `deepseek` | deepseek-chat | DeepSeek | $0.00028 / $0.00042 |
 | `gemini` | gemini-2.5-flash | Google | $0.000075 / $0.0003 |
 | `gemini-pro` | gemini-2.5-pro | Google | $0.00125 / $0.01 |
 | `gpt4` | gpt-4o | OpenAI | $0.0025 / $0.01 |
 | `gpt4-mini` | gpt-4o-mini | OpenAI | $0.00015 / $0.0006 |
+| `sonnet` | claude-sonnet-4 | Anthropic | $0.003 / $0.015 |
+| `haiku` | claude-3.5-haiku | Anthropic | $0.0008 / $0.004 |
+| `opus` | claude-opus-4 | Anthropic | $0.005 / $0.025 |
+| `opus45` | claude-opus-4-5 | Anthropic | $0.005 / $0.025 |
 | `local` | qwen3:8b | Ollama | $0 / $0 |
 | `local-coder` | qwen3-coder:30b | Ollama | $0 / $0 |
 | `local-vision` | qwen3-vl:8b | Ollama | $0 / $0 |
@@ -494,20 +583,26 @@ Used only when OpenClaw doesn't provide pre-calculated cost on the message. Cost
 
 | Model | Input | Output |
 |---|---|---|
-| claude-opus-4.6 | $0.005 | $0.025 |
-| claude-opus-4.5 | $0.005 | $0.025 |
-| claude-sonnet-4.5 | $0.003 | $0.015 |
-| claude-haiku-4.5 | $0.001 | $0.005 |
-| claude-3.5-haiku (legacy) | $0.0008 | $0.004 |
+| doubao-seed-2.0-pro | $0.004 | $0.016 |
+| doubao-seed-2.0-lite | $0.0008 | $0.002 |
+| doubao-seed-2.0-mini | $0.0004 | $0.001 |
+| glm-5 | $0.001 | $0.001 |
+| MiniMax-M2.5 | $0.001 | $0.005 |
+| qwen3.5-plus-02-15 | $0.001 | $0.003 |
 | kimi-k2.5 | $0.003 | $0.012 |
 | deepseek-chat | $0.00028 | $0.00042 |
 | gemini-2.5-flash | $0.000075 | $0.0003 |
 | gemini-2.5-pro | $0.00125 | $0.01 |
 | gpt-4o | $0.0025 | $0.01 |
 | gpt-4o-mini | $0.00015 | $0.0006 |
+| claude-opus-4.6 | $0.005 | $0.025 |
+| claude-opus-4.5 | $0.005 | $0.025 |
+| claude-sonnet-4.5 | $0.003 | $0.015 |
+| claude-haiku-4.5 | $0.001 | $0.005 |
+| claude-3.5-haiku (legacy) | $0.0008 | $0.004 |
 | Ollama (all) | $0 | $0 |
 
-Both bare (`claude-sonnet-4-20250514`) and provider-prefixed (`anthropic/claude-sonnet-4`) model IDs are recognised.
+Both bare (`doubao-seed-2.0-pro`) and provider-prefixed (`bytedance-ark/doubao-seed-2.0-pro`) model IDs are recognised.
 
 ### Local model detection
 
@@ -521,6 +616,8 @@ Local models are automatically detected as free ($0) based on name patterns, eve
 - `vicuna*`, `orca*`, `neural-chat*`, `starling*`
 - `openchat*`, `zephyr*`, `dolphin*`
 - `nous-hermes*`, `yi:*`
+
+Models prefixed with `openrouter/`, `minimax/`, or `bytedance-ark/` are **excluded** from local detection even if they match name patterns (e.g., `openrouter/qwen/qwen3.5-plus` is a cloud model, not local).
 
 This ensures Ollama models are never charged, regardless of how OpenClaw reports the model name.
 
@@ -540,19 +637,24 @@ src/
   provider-chain.ts     — provider chain config and selection logic
   usage-tracker.ts      — aggregates token usage and cost from all messages
   budget-gate.ts        — budget check + task-aware model selection
+  failure-tracker.ts    — consecutive failure tracking per provider
   ollama-client.ts      — thin HTTP client for Ollama API
   model-switcher.ts     — state management + config file patching
+  context-manager.ts    — session truncation for context window management
 tests/
   budget-store.test.ts
   chain-budget-store.test.ts
   provider-chain.test.ts
   usage-tracker.test.ts
   budget-gate.test.ts
+  failure-tracker.test.ts
   ollama-client.test.ts
   model-switcher.test.ts
+  context-manager.test.ts
 data/
   budget.json           — runtime spend state (legacy mode, gitignored)
   chain-budget.json     — per-provider spend state (chain mode, gitignored)
+  failure-tracker.json  — failure counts per provider (gitignored, daily reset)
   provider-chain.json   — provider chain configuration
   switcher-state.json   — model switch state (gitignored)
 ```

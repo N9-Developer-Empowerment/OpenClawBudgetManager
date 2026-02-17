@@ -23,6 +23,7 @@ import {
   restoreCloudModel,
   switchToProvider,
   restoreFirstProvider,
+  syncActiveProviderModel,
   applyOptimizedConfig,
   isOptimizationApplied,
   getOptimizationRules,
@@ -435,7 +436,7 @@ describe("Model Switcher", () => {
       expect(openclawConfig.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4");
     });
 
-    it("should skip if already on first provider", async () => {
+    it("should skip if already on first provider and model matches", async () => {
       writeTestConfig("anthropic/claude-sonnet-4");
       const config = createTestChainConfig();
       loadChainBudget(TEST_CHAIN_BUDGET_FILE, config);
@@ -449,6 +450,39 @@ describe("Model Switcher", () => {
       expect(result).toBe(false);
       expect(mockLogger.info).toHaveBeenCalledWith(
         expect.stringContaining("Already on first provider"),
+      );
+    });
+
+    it("should switch when budget says first provider but OpenClaw config has wrong model", async () => {
+      // This is the day-reset bug: budget was reset (activeProvider=anthropic)
+      // but OpenClaw config still has the previous provider's model
+      writeTestConfig("deepseek/deepseek-chat");
+      const budgetData = {
+        date: new Date().toISOString().split("T")[0],
+        providers: {
+          anthropic: { spentUsd: 0, exhausted: false },
+          moonshot: { spentUsd: 0, exhausted: false },
+          deepseek: { spentUsd: 0, exhausted: false },
+          ollama: { spentUsd: 0, exhausted: false },
+        },
+        transactions: [],
+        activeProvider: "anthropic",
+        switchHistory: [],
+      };
+      fs.writeFileSync(TEST_CHAIN_BUDGET_FILE, JSON.stringify(budgetData, null, 2));
+
+      const result = await restoreFirstProvider(
+        TEST_CHAIN_CONFIG_FILE,
+        TEST_CHAIN_BUDGET_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(true);
+      const openclawConfig = readTestConfig();
+      expect(openclawConfig.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4");
+      expect(mockedExecSync).toHaveBeenCalledWith(
+        "openclaw gateway restart",
+        expect.objectContaining({ timeout: 15_000 }),
       );
     });
 
@@ -479,6 +513,78 @@ describe("Model Switcher", () => {
     });
   });
 
+  describe("syncActiveProviderModel", () => {
+    beforeEach(() => {
+      const chainConfig = createTestChainConfig();
+      fs.writeFileSync(TEST_CHAIN_CONFIG_FILE, JSON.stringify(chainConfig, null, 2));
+    });
+
+    it("should return false when config already matches active provider", () => {
+      writeTestConfig("anthropic/claude-sonnet-4");
+
+      const result = syncActiveProviderModel(
+        "anthropic",
+        TEST_CHAIN_CONFIG_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(false);
+      expect(mockedExecSync).not.toHaveBeenCalled();
+    });
+
+    it("should fix mismatch and restart gateway", () => {
+      writeTestConfig("anthropic/claude-sonnet-4-20250514");
+
+      const result = syncActiveProviderModel(
+        "moonshot",
+        TEST_CHAIN_CONFIG_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(true);
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("moonshot/kimi-k2.5");
+      expect(mockedExecSync).toHaveBeenCalledWith(
+        "openclaw gateway restart",
+        expect.objectContaining({ timeout: 15_000 }),
+      );
+    });
+
+    it("should fix mismatch after budget reset (day-reset bug scenario)", () => {
+      // Simulates: budget reset set activeProvider to "anthropic" (first provider)
+      // but OpenClaw config still has yesterday's deepseek model
+      writeTestConfig("deepseek/deepseek-chat");
+
+      const result = syncActiveProviderModel(
+        "anthropic",
+        TEST_CHAIN_CONFIG_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(true);
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4");
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.stringContaining("Config mismatch"),
+      );
+    });
+
+    it("should return false for unknown provider", () => {
+      writeTestConfig("anthropic/claude-sonnet-4");
+
+      const result = syncActiveProviderModel(
+        "unknown-provider",
+        TEST_CHAIN_CONFIG_FILE,
+        mockLogger,
+      );
+
+      expect(result).toBe(false);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("not found"),
+      );
+    });
+  });
+
   describe("applyOptimizedConfig", () => {
     it("should set Sonnet as default model", () => {
       writeTestConfig("anthropic/claude-3-5-haiku-20241022");
@@ -501,12 +607,46 @@ describe("Model Switcher", () => {
       expect(config.agents.defaults.models["anthropic/claude-opus-4-20250514"]).toEqual({ alias: "opus" });
     });
 
+    it("should add aliases for new Chinese AI models", () => {
+      writeTestConfig("bytedance-ark/seed-2-0-mini-260215");
+
+      applyOptimizedConfig(mockLogger);
+
+      const config = readTestConfig();
+      expect(config.agents.defaults.models["bytedance-ark/seed-2-0-mini-260215"]).toEqual({ alias: "seed" });
+      expect(config.agents.defaults.models["openrouter/z-ai/glm-5"]).toEqual({ alias: "glm" });
+      expect(config.agents.defaults.models["minimax/MiniMax-M2.5"]).toEqual({ alias: "minimax" });
+      expect(config.agents.defaults.models["openrouter/qwen/qwen3.5-plus-02-15"]).toEqual({ alias: "qwen35" });
+    });
+
     it("should accept custom default model", () => {
       writeTestConfig("anthropic/claude-sonnet-4-20250514");
 
       applyOptimizedConfig(mockLogger, {
         defaultModel: "anthropic/claude-sonnet-4-20250514",
       });
+
+      const config = readTestConfig();
+      expect(config.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4-20250514");
+    });
+
+    it("should preserve active model when skipModelOverride is true", () => {
+      writeTestConfig("bytedance-ark/seed-2-0-mini-260215");
+
+      applyOptimizedConfig(mockLogger, { skipModelOverride: true });
+
+      const config = readTestConfig();
+      // Should NOT change the primary model
+      expect(config.agents.defaults.model.primary).toBe("bytedance-ark/seed-2-0-mini-260215");
+      // But should still add aliases
+      expect(config.agents.defaults.models["anthropic/claude-sonnet-4-20250514"]).toEqual({ alias: "sonnet" });
+      expect(config.agents.defaults.models["bytedance-ark/seed-2-0-mini-260215"]).toEqual({ alias: "seed" });
+    });
+
+    it("should override active model when skipModelOverride is false", () => {
+      writeTestConfig("bytedance-ark/seed-2-0-mini-260215");
+
+      applyOptimizedConfig(mockLogger, { skipModelOverride: false });
 
       const config = readTestConfig();
       expect(config.agents.defaults.model.primary).toBe("anthropic/claude-sonnet-4-20250514");
@@ -581,9 +721,10 @@ describe("Model Switcher", () => {
       expect(GENERAL_OPTIMIZATION_RULES).not.toContain("Switch to Sonnet");
     });
 
-    it("should mention fallback provider status", () => {
-      expect(GENERAL_OPTIMIZATION_RULES).toContain("Anthropic budget was exhausted");
-      expect(GENERAL_OPTIMIZATION_RULES).toContain("fallback provider");
+    it("should mention provider-agnostic budget awareness", () => {
+      expect(GENERAL_OPTIMIZATION_RULES).toContain("per-provider budget limits");
+      expect(GENERAL_OPTIMIZATION_RULES).toContain("automatically switches providers");
+      expect(GENERAL_OPTIMIZATION_RULES).not.toContain("Anthropic budget was exhausted");
     });
 
     it("should contain rate limits", () => {

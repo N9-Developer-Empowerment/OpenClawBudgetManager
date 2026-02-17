@@ -105,11 +105,17 @@ export function resolveFullModelId(providerId: string, modelId: string): string 
   return `${providerId}/${modelId}`;
 }
 
+function toEnvKey(providerId: string): string {
+  return providerId.toUpperCase().replace(/-/g, "_");
+}
+
 export function applyEnvOverrides(config: ChainConfig): ChainConfig {
   const updated = structuredClone(config);
 
   for (const provider of updated.providers) {
-    const envKey = `${provider.id.toUpperCase()}_DAILY_BUDGET_USD`;
+    const prefix = toEnvKey(provider.id);
+
+    const envKey = `${prefix}_DAILY_BUDGET_USD`;
     const envValue = process.env[envKey];
     if (envValue !== undefined) {
       const parsed = parseFloat(envValue);
@@ -118,7 +124,7 @@ export function applyEnvOverrides(config: ChainConfig): ChainConfig {
       }
     }
 
-    const enabledKey = `${provider.id.toUpperCase()}_ENABLED`;
+    const enabledKey = `${prefix}_ENABLED`;
     const enabledValue = process.env[enabledKey];
     if (enabledValue !== undefined) {
       provider.enabled = enabledValue.toLowerCase() === "true";
@@ -132,20 +138,36 @@ function getDefaultChainConfig(): ChainConfig {
   return {
     providers: [
       {
-        id: "anthropic",
+        id: "bytedance-ark",
         priority: 1,
         maxDailyUsd: 3.0,
         enabled: true,
         models: {
-          default: "claude-sonnet-4-20250514",
-          coding: "claude-sonnet-4-20250514",
-          vision: "claude-sonnet-4-20250514",
+          default: "seed-2-0-mini-260215",
+        },
+      },
+      {
+        id: "openrouter-glm",
+        priority: 2,
+        maxDailyUsd: 3.0,
+        enabled: true,
+        models: {
+          default: "glm-5",
+        },
+      },
+      {
+        id: "minimax",
+        priority: 3,
+        maxDailyUsd: 3.0,
+        enabled: true,
+        models: {
+          default: "MiniMax-M2.5",
         },
       },
       {
         id: "moonshot",
-        priority: 2,
-        maxDailyUsd: 2.0,
+        priority: 4,
+        maxDailyUsd: 3.0,
         enabled: true,
         models: {
           default: "kimi-k2.5",
@@ -153,9 +175,18 @@ function getDefaultChainConfig(): ChainConfig {
         },
       },
       {
+        id: "openrouter-qwen",
+        priority: 5,
+        maxDailyUsd: 3.0,
+        enabled: true,
+        models: {
+          default: "qwen3.5-plus-02-15",
+        },
+      },
+      {
         id: "deepseek",
-        priority: 3,
-        maxDailyUsd: 1.0,
+        priority: 6,
+        maxDailyUsd: 5.0,
         enabled: true,
         models: {
           default: "deepseek-chat",
@@ -164,8 +195,8 @@ function getDefaultChainConfig(): ChainConfig {
       },
       {
         id: "google",
-        priority: 4,
-        maxDailyUsd: 1.0,
+        priority: 7,
+        maxDailyUsd: 3.0,
         enabled: true,
         models: {
           default: "gemini-2.5-flash",
@@ -174,13 +205,24 @@ function getDefaultChainConfig(): ChainConfig {
       },
       {
         id: "openai",
-        priority: 5,
-        maxDailyUsd: 1.0,
+        priority: 8,
+        maxDailyUsd: 3.0,
         enabled: true,
         models: {
           default: "gpt-4o-mini",
           coding: "gpt-4o",
           vision: "gpt-4o",
+        },
+      },
+      {
+        id: "anthropic",
+        priority: 9,
+        maxDailyUsd: 5.0,
+        enabled: true,
+        models: {
+          default: "claude-sonnet-4-20250514",
+          coding: "claude-sonnet-4-20250514",
+          vision: "claude-sonnet-4-20250514",
         },
       },
       {

@@ -185,6 +185,7 @@ export async function switchToProvider(
   chainConfigPath: string,
   chainBudgetPath: string,
   logger: Logger,
+  reason?: string,
 ): Promise<boolean> {
   const rawConfig = loadChainConfig(chainConfigPath);
   const config = applyEnvOverrides(rawConfig);
@@ -238,7 +239,7 @@ export async function switchToProvider(
       chainBudgetPath,
       currentProviderId,
       providerId,
-      `Budget exhausted for ${currentProviderId}`,
+      reason ?? `Switched to ${providerId}`,
     );
     logger.info(
       `[model-switcher] Switching from ${currentProviderId} to ${providerId} (${currentModel} → ${fullModelId})`,
@@ -255,10 +256,12 @@ export async function switchToProvider(
 // Cost optimization: Apply recommended config from the guide
 export interface OptimizationConfig {
   defaultModel: string;
+  skipModelOverride?: boolean;
 }
 
 const DEFAULT_OPTIMIZATION: OptimizationConfig = {
   defaultModel: "anthropic/claude-sonnet-4-20250514",
+  skipModelOverride: false,
 };
 
 export function applyOptimizedConfig(
@@ -276,8 +279,10 @@ export function applyOptimizedConfig(
     if (!config.agents.defaults.model) config.agents.defaults.model = {};
     if (!config.agents.defaults.models) config.agents.defaults.models = {};
 
-    // Set Sonnet as default (best balance of quality and cost)
-    config.agents.defaults.model.primary = opts.defaultModel;
+    // Only set default model when not skipping override
+    if (!opts.skipModelOverride) {
+      config.agents.defaults.model.primary = opts.defaultModel;
+    }
 
     // Add model aliases for easy switching in prompts
     // Anthropic models
@@ -285,6 +290,19 @@ export function applyOptimizedConfig(
     config.agents.defaults.models["anthropic/claude-3-5-haiku-20241022"] = { alias: "haiku" };
     config.agents.defaults.models["anthropic/claude-opus-4-20250514"] = { alias: "opus" };
     config.agents.defaults.models["anthropic/claude-opus-4-5-20251101"] = { alias: "opus45" };
+
+    // ByteDance Ark / Seed 2.0
+    config.agents.defaults.models["bytedance-ark/seed-2-0-mini-260215"] = { alias: "seed" };
+    config.agents.defaults.models["bytedance-ark/seed-2-0-lite-260215"] = { alias: "seed-lite" };
+
+    // OpenRouter GLM
+    config.agents.defaults.models["openrouter/z-ai/glm-5"] = { alias: "glm" };
+
+    // MiniMax
+    config.agents.defaults.models["minimax/MiniMax-M2.5"] = { alias: "minimax" };
+
+    // OpenRouter Qwen
+    config.agents.defaults.models["openrouter/qwen/qwen3.5-plus-02-15"] = { alias: "qwen35" };
 
     // Other providers
     config.agents.defaults.models["deepseek/deepseek-chat"] = { alias: "deepseek" };
@@ -300,7 +318,10 @@ export function applyOptimizedConfig(
     config.agents.defaults.models["ollama/qwen3-vl:8b"] = { alias: "local-vision" };
 
     writeOpenClawConfig(config);
-    logger.info("[model-switcher] Applied optimized config: Sonnet default, model aliases added");
+    const msg = opts.skipModelOverride
+      ? "[model-switcher] Applied model aliases (active model preserved)"
+      : "[model-switcher] Applied optimized config: default model set, model aliases added";
+    logger.info(msg);
     return true;
   } catch (err) {
     logger.error("[model-switcher] Failed to apply optimized config:", err);
@@ -370,8 +391,8 @@ RATE LIMITS:
 - If you hit 429 error: STOP, wait 5 minutes, retry
 
 BUDGET AWARENESS:
-- This session has budget limits enforced by the Budget Manager plugin
-- Anthropic budget was exhausted, now using fallback provider
+- This session has per-provider budget limits enforced by the Budget Manager plugin
+- The system automatically switches providers when budgets are exhausted or failures occur
 - Prefer cheaper operations when possible
 - Batch work to reduce API calls
 `.trim();
@@ -402,21 +423,23 @@ export async function restoreFirstProvider(
   }
 
   const firstProvider = enabled[0];
-  const budgetData = loadChainBudget(chainBudgetPath, config);
-  const currentProviderId = budgetData.activeProvider;
+  const model = getModelForTask(firstProvider, "general");
+  const fullModelId = resolveFullModelId(firstProvider.id, model);
 
-  // If already on first provider, no need to switch
-  if (currentProviderId === firstProvider.id) {
+  // Check both budget state AND actual OpenClaw config model.
+  // The budget may already say "bytedance-ark" (from daily reset) while the
+  // OpenClaw config still has the previous day's model (e.g., "anthropic/...").
+  const budgetData = loadChainBudget(chainBudgetPath, config);
+  const budgetProvider = budgetData.activeProvider;
+  const openclawConfig = readOpenClawConfig();
+  const currentModel = resolveCurrentModel(openclawConfig);
+
+  if (budgetProvider === firstProvider.id && currentModel === fullModelId) {
     logger.info(`[model-switcher] Already on first provider: ${firstProvider.id}`);
     return false;
   }
 
-  // Default to general task type for restore
-  const model = getModelForTask(firstProvider, "general");
-  const fullModelId = resolveFullModelId(firstProvider.id, model);
-
   // Update OpenClaw config
-  const openclawConfig = readOpenClawConfig();
   const updated = setActiveModel(openclawConfig, fullModelId);
   writeOpenClawConfig(updated);
 
@@ -425,6 +448,44 @@ export async function restoreFirstProvider(
 
   logger.info(
     `[model-switcher] Restored first provider: ${firstProvider.id} (${fullModelId}), restarting gateway`,
+  );
+  restartGateway();
+  return true;
+}
+
+// Ensure the OpenClaw config model matches the budget's active provider.
+// Called on every startup to fix mismatches (e.g., config still has
+// yesterday's provider after a budget reset, or after a manual restart).
+export function syncActiveProviderModel(
+  activeProviderId: string,
+  chainConfigPath: string,
+  logger: Logger,
+): boolean {
+  const rawConfig = loadChainConfig(chainConfigPath);
+  const config = applyEnvOverrides(rawConfig);
+  const provider = getProviderById(config, activeProviderId);
+
+  if (!provider) {
+    logger.error(`[model-switcher] Active provider ${activeProviderId} not found in chain config`);
+    return false;
+  }
+
+  const model = getModelForTask(provider, "general");
+  const fullModelId = resolveFullModelId(activeProviderId, model);
+
+  const openclawConfig = readOpenClawConfig();
+  const currentModel = resolveCurrentModel(openclawConfig);
+
+  if (currentModel === fullModelId) {
+    return false;
+  }
+
+  // Config mismatch — fix it
+  const updated = setActiveModel(openclawConfig, fullModelId);
+  writeOpenClawConfig(updated);
+
+  logger.info(
+    `[model-switcher] Config mismatch: ${currentModel} → ${fullModelId}, restarting gateway`,
   );
   restartGateway();
   return true;

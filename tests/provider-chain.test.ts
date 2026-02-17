@@ -294,7 +294,12 @@ describe("Provider Chain", () => {
   });
 
   describe("applyEnvOverrides", () => {
-    const ENV_KEYS = ["ANTHROPIC_DAILY_BUDGET_USD", "MOONSHOT_ENABLED"] as const;
+    const ENV_KEYS = [
+      "ANTHROPIC_DAILY_BUDGET_USD",
+      "MOONSHOT_ENABLED",
+      "BYTEDANCE_ARK_DAILY_BUDGET_USD",
+      "OPENROUTER_GLM_ENABLED",
+    ] as const;
     const saved: Record<string, string | undefined> = {};
 
     beforeEach(() => {
@@ -339,6 +344,35 @@ describe("Provider Chain", () => {
       applyEnvOverrides(config);
 
       expect(config.providers.find((p) => p.id === "anthropic")?.maxDailyUsd).toBe(3.0);
+    });
+
+    it("should convert hyphens to underscores for env var names", () => {
+      const config: ChainConfig = {
+        providers: [
+          ...createTestConfig().providers,
+          {
+            id: "bytedance-ark",
+            priority: 0,
+            maxDailyUsd: 3.0,
+            enabled: true,
+            models: { default: "doubao-seed-2.0-pro" },
+          },
+          {
+            id: "openrouter-glm",
+            priority: 0,
+            maxDailyUsd: 3.0,
+            enabled: true,
+            models: { default: "glm-5" },
+          },
+        ],
+      };
+      process.env.BYTEDANCE_ARK_DAILY_BUDGET_USD = "7.50";
+      process.env.OPENROUTER_GLM_ENABLED = "false";
+
+      const updated = applyEnvOverrides(config);
+
+      expect(updated.providers.find((p) => p.id === "bytedance-ark")?.maxDailyUsd).toBe(7.5);
+      expect(updated.providers.find((p) => p.id === "openrouter-glm")?.enabled).toBe(false);
     });
   });
 });
